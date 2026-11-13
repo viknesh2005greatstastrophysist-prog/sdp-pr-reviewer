@@ -99,3 +99,15 @@ def test_assert_in_test_files_is_not_reported(tmp_path):
     s101 = [item for item in findings if item.rule_id == "S101"]
     assert [item.path for item in s101] == ["app.py"]
     assert s101[0].severity == Severity.LOW
+
+
+def test_gemini_retry_delay_in_the_body_is_honoured():
+    """Found live on Render: Gemini 429s carry the wait in error.details[].retryDelay."""
+    import httpx
+
+    from pr_reviewer.llm import _retry_delay
+
+    body = [{"error": {"code": 429, "details": [{"@type": "RetryInfo", "retryDelay": "17s"}]}}]
+    response = httpx.Response(429, json=body)
+    assert _retry_delay(response, 0) == 17.0
+    assert _retry_delay(httpx.Response(429, json={"error": {}}), 0) == 4

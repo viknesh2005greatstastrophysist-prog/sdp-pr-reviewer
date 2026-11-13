@@ -22,7 +22,7 @@ class OpenAICompatibleClient:
         model: str,
         base_url: str = "https://api.openai.com/v1",
         timeout: float = 45,
-        max_retries: int = 2,
+        max_retries: int = 4,
         transport: httpx.AsyncBaseTransport | None = None,
     ):
         self.api_key = api_key
@@ -104,7 +104,29 @@ def _retry_delay(response: httpx.Response, attempt: int) -> float:
             return min(max(float(header), 1.0), 60.0)
         except ValueError:
             pass
+    hinted = _body_retry_delay(response)
+    if hinted is not None:
+        return min(max(hinted, 1.0), 60.0)
     return min(2**attempt * (4 if response.status_code == 429 else 1), 30)
+
+
+def _body_retry_delay(response: httpx.Response) -> float | None:
+    """Google's APIs put the wait in the body: error.details[].retryDelay = "17s"."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    error = payload[0].get("error", {}) if isinstance(payload, list) and payload else None
+    if error is None and isinstance(payload, dict):
+        error = payload.get("error", {})
+    for detail in (error or {}).get("details", []) or []:
+        delay = isinstance(detail, dict) and detail.get("retryDelay")
+        if isinstance(delay, str) and delay.endswith("s"):
+            try:
+                return float(delay[:-1])
+            except ValueError:
+                continue
+    return None
 
 
 def _strip_fence(content: str) -> str:
