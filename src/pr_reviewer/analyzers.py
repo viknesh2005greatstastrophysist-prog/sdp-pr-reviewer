@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import sys
+from collections.abc import Callable
+from pathlib import Path
+
+from .models import DiffFile, Finding, Severity
+
+Runner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+def _relative_path(raw: str, root: Path) -> str:
+    path = Path(raw)
+    if path.is_absolute():
+        try:
+            path = path.resolve().relative_to(root)
+        except ValueError:
+            return ""
+    normalized = path.as_posix().removeprefix("./")
+    return normalized if ".." not in Path(normalized).parts else ""
+
+
+class StaticAnalyzer:
+    """Run analyzer CLIs only; repository Python code is never executed or imported."""
+
+    def __init__(self, timeout: float = 60, runner: Runner = subprocess.run):
+        self.timeout = timeout
+        self.runner = runner
+
+    def analyze(
+        self, files: list[DiffFile], repo: str | Path | None
+    ) -> tuple[list[Finding], list[str]]:
+        if repo is None:
+            return [], ["Static analyzers require a trusted, isolated checkout."]
+        root = Path(repo).resolve()
+        if not root.is_dir():
+            return [], ["Static analysis checkout does not exist."]
+        changed = {item.path: item.added_lines() for item in files}
+        findings: list[Finding] = []
+        warnings: list[str] = []
+        commands = {
+            "ruff": [
+                "ruff",
+                "check",
+                "--no-cache",
+                "--select",
+                "E,F,I,B,UP,S",
+                "--output-format",
+                "json",
+                ".",
+            ],
+            "semgrep": [
+                "semgrep",
+                "scan",
+                "--json",
+                "--metrics=off",
+                "--disable-version-check",
+                "--config",
+                str(Path(__file__).with_name("semgrep_rules.yml")),
+                ".",
+            ],
+        }
+        for tool, command in commands.items():
+            if self.runner is subprocess.run:
+                executable = shutil.which(tool)
+                if executable is None:
+                    sibling = Path(sys.executable).parent / (
+                        f"{tool}.exe" if sys.platform == "win32" else tool
+                    )
+                    executable = str(sibling) if sibling.is_file() else None
+                if executable is None:
+                    warnings.append(f"{tool} not installed; skipped")
+                    continue
+                command[0] = executable
+            try:
+                process = self.runner(
+                    command,
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout,
+                    check=False,
+                    shell=False,
+                )
+                payload = json.loads(process.stdout or ("[]" if tool == "ruff" else "{}"))
+                entries = payload if tool == "ruff" else payload.get("results", [])
+                for item in entries:
+                    raw_path = item.get("filename", "") if tool == "ruff" else item.get("path", "")
+                    path = _relative_path(raw_path, root)
+                    line = (
+                        item.get("location", {}).get("row", 0)
+                        if tool == "ruff"
+                        else item.get("start", {}).get("line", 0)
+                    )
+                    if not path or line not in changed.get(path, set()):
+                        continue
+                    code = item.get("code") if tool == "ruff" else item.get("check_id")
+                    message = (
+                        item.get("message", "")
+                        if tool == "ruff"
+                        else item.get("extra", {}).get("message", "")
+                    )
+                    findings.append(
+                        Finding(
+                            path=path,
+                            line=line,
+                            category="style" if tool == "ruff" else "security",
+                            severity=self._severity(tool, item),
+                            title=f"{tool}: {code or 'diagnostic'}",
+                            message=message or "Static analysis diagnostic",
+                            evidence=(
+                                f"Deterministic {tool} rule {code or 'unknown'} matched "
+                                f"line {line}."
+                            ),
+                            source=tool,
+                            confidence=1.0,
+                            rule_id=code,
+                        )
+                    )
+                if process.returncode not in (0, 1):
+                    warnings.append(
+                        f"{tool} exited with {process.returncode}: {process.stderr[:300]}"
+                    )
+            except (json.JSONDecodeError, subprocess.TimeoutExpired, OSError) as exc:
+                warnings.append(f"{tool} failed: {exc}")
+        return findings, warnings
+
+    @staticmethod
+    def _severity(tool: str, item: dict) -> Severity:
+        if tool == "ruff":
+            return Severity.HIGH if str(item.get("code", "")).startswith("S") else Severity.LOW
+        value = str(item.get("extra", {}).get("severity", "WARNING")).upper()
+        return {"ERROR": Severity.HIGH, "WARNING": Severity.MEDIUM}.get(value, Severity.LOW)
+
+
+def analyze(files: list[DiffFile], repo: str | None = None) -> tuple[list[Finding], list[str]]:
+    return StaticAnalyzer().analyze(files, repo)

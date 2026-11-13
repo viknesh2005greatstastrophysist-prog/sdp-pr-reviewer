@@ -1,0 +1,79 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\title{Evidence-Grounded Multi-Agent Pull Request Reviewer\\Review 2 Design and Implementation Report}
+\author{Software Design Project}
+\date{October 2026}
+
+\begin{document}
+\maketitle
+
+\section{Review 2 Scope}
+This report maps the Review 2 expectations to the implemented pull request reviewer. The system treats repository content as untrusted input, combines deterministic analysis with four specialist agents, validates every reported location against the pull request diff, and publishes advisory GitHub COMMENT reviews only.
+
+\section{System Requirements}
+The literature review identified recurring weaknesses in automated review systems: weak line grounding, high false-positive rates, limited architectural reasoning, and insufficient reviewer control. These gaps produced the following requirements.
+
+\subsection{Functional Requirements}
+The application shall ingest GitHub pull requests, parse unified diffs, map added lines, extract bounded Python AST context without importing repository modules, run Ruff and Semgrep, execute four specialist agents concurrently, consolidate findings, generate validated suggestion blocks, persist review history, and optionally publish inline comments with an executive summary.
+
+\subsection{Non-Functional Requirements}
+The system shall verify webhook signatures, keep credentials in environment variables, avoid executing pull request code, tolerate individual agent failures, preserve deterministic evidence when LLM services fail, expose typed Pydantic boundaries, and support reproducible evaluation. Precision, recall, F1, false positives per pull request, severity agreement, latency, and cost remain evaluation measures rather than unverified claims.
+
+\section{Architectural Framework}
+The architecture separates GitHub transport, evidence extraction, deterministic analysis, specialist reasoning, consolidation, suggestion validation, persistence, and publication. FastAPI receives explicit requests and signed webhooks. The GitHub adapter obtains pull request metadata and changed content. The parser and context extractor create inert evidence. Ruff and Semgrep provide deterministic findings. LangGraph coordinates the Bug-Hunter, Performance, Style/Syntax, and Architecture/Scalability agents. The aggregator validates locations, removes duplicates, ranks severity, and forwards eligible findings to the refactoring engine. PostgreSQL stores completed reviews, with SQLite available for local development.
+
+\section{Design Principles, User Experience, and APIs}
+The implementation applies Strategy through the common reviewer interface, Adapter around external services, fan-out/fan-in orchestration for concurrent specialists, Repository for persistence, and dependency injection for deterministic tests. The dashboard presents the review summary, finding severity, exact evidence, suggestions, and history. Publishing remains an explicit configuration choice.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+Endpoint & Purpose \\
+\midrule
+\texttt{POST /review} & Review a supplied unified diff \\
+\texttt{POST /github/review} & Retrieve and review a GitHub pull request \\
+\texttt{POST /webhooks/github} & Process a verified GitHub webhook \\
+\texttt{GET /history/\{owner\}/\{repo\}} & Retrieve stored review history \\
+\texttt{GET /health} & Report service health \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Detailed Module Design}
+The review algorithm verifies the request, ingests metadata and diffs, builds an added-line map, extracts bounded AST context, runs deterministic analyzers, invokes the four agents concurrently, rejects ungrounded findings, deduplicates related findings, ranks them by severity, validates suggested replacements, stores the result, and optionally publishes a COMMENT review.
+
+Consolidation normalizes the file path, line, rule, category, and message. It rejects locations outside the changed lines, groups nearby findings with the same category, retains the strongest supported result, and applies stable severity, path, and line ordering. The refactoring engine limits each replacement to an added line, verifies the mapped location, checks Python syntax when applicable, and formats the result as a GitHub suggestion block.
+
+\section{Design and Development Tools}
+Mermaid diagrams in \texttt{docs/ARCHITECTURE.md} document the component, sequence, and class models. The implementation uses Python, FastAPI, LangGraph, Pydantic, an OpenAI-compatible client, the GitHub REST API, Ruff, Semgrep, Pytest, PostgreSQL, Docker, and Docker Compose. Git tracks the source, Markdown maintains operational documentation, and this LaTeX source provides the Review 2 report format.
+
+\section{Module Implementation and Integration}
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+Area & Implemented modules \\
+\midrule
+Foundation & \texttt{api.py}, \texttt{settings.py}, \texttt{models.py}, \texttt{database.py} \\
+Evidence & \texttt{github.py}, \texttt{parser.py}, \texttt{context.py}, \texttt{analyzers.py} \\
+AI review & \texttt{agents.py}, \texttt{llm.py}, \texttt{orchestrator.py} \\
+Output & \texttt{aggregator.py}, \texttt{refactor.py}, \texttt{service.py} \\
+Evaluation & \texttt{evaluation.py} and the JSONL result schema \\
+Deployment & Docker, Compose, CLI, dashboard, and offline demo \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Verification and Evaluation}
+The verified local test run completed 26 tests successfully and skipped one platform-dependent test. Ruff reports no findings for the application and test source. The evaluation runner compares static-only, single-agent, and hybrid configurations on the same held-out human-labelled pull requests. The project does not report comparative metrics until that corpus is frozen and reviewed.
+
+\section{Demonstration}
+The demonstration supports a bundled offline diff and a configured live GitHub pull request. It shows ingestion, static analysis, concurrent specialist review, evidence validation, consolidation, suggestion generation, dashboard/history output, and optional COMMENT publication. The demonstration never approves or merges a pull request.
+
+\end{document}

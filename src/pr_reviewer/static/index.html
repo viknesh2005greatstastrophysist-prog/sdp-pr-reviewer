@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Evidence-grounded multi-agent pull request review dashboard">
+  <title>PRISM · Evidence-grounded PR review</title>
+  <link rel="stylesheet" href="/assets/dashboard.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#overview" aria-label="PRISM home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>PRISM</strong><small>PR intelligence</small></span>
+      </a>
+
+      <nav class="primary-nav" aria-label="Dashboard sections">
+        <button class="nav-item active" data-view="overview"><span>◫</span>Overview</button>
+        <button class="nav-item" data-view="workflow"><span>⌁</span>Workflow</button>
+        <button class="nav-item" data-view="findings"><span>◇</span>Findings <b id="findingBadge">0</b></button>
+        <button class="nav-item" data-view="history"><span>↺</span>History</button>
+        <button class="nav-item" data-view="configuration"><span>⚙</span>Configuration</button>
+      </nav>
+
+      <div class="sidebar-label">SPECIALISTS</div>
+      <div class="mini-agent"><span class="agent-dot bug"></span><div>Bug Hunter<small>Correctness & security</small></div></div>
+      <div class="mini-agent"><span class="agent-dot performance"></span><div>Performance<small>Complexity & latency</small></div></div>
+      <div class="mini-agent"><span class="agent-dot style"></span><div>Style / Syntax<small>Clarity & consistency</small></div></div>
+      <div class="mini-agent"><span class="agent-dot architecture"></span><div>Architecture<small>Scale & boundaries</small></div></div>
+
+      <div class="sidebar-footer">
+        <span class="status-pulse"></span>
+        <div><strong>Local engine</strong><small id="engineState">Connecting…</small></div>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">EVIDENCE-GROUNDED REVIEW</p>
+          <h1 id="pageTitle">Review command center</h1>
+        </div>
+        <div class="topbar-actions">
+          <div class="mode-switch" role="group" aria-label="Review mode">
+            <button id="demoToggle" class="active" data-mode="demo"><span></span>Demo</button>
+            <button id="liveToggle" data-mode="live"><span></span>Live</button>
+          </div>
+          <button class="icon-button" id="refreshButton" title="Refresh dashboard" aria-label="Refresh dashboard">↻</button>
+          <span class="avatar" aria-label="Local user">LR</span>
+        </div>
+      </header>
+
+      <div id="notice" class="notice hidden" role="status"></div>
+
+      <section class="view active" id="view-overview">
+        <div class="hero-row">
+          <article class="review-launcher surface">
+            <div class="launcher-head">
+              <div>
+                <span class="label-chip" id="modeChip">SAFE SANDBOX</span>
+                <h2 id="launcherTitle">Run the complete demo review</h2>
+                <p id="launcherCopy">A trusted sample PR exercises parsing, AST context, Ruff, Semgrep, four agents, consolidation and suggestions.</p>
+              </div>
+              <div class="orbit" aria-hidden="true"><i></i><i></i><b>4</b></div>
+            </div>
+
+            <form id="reviewForm">
+              <div id="demoControls" class="demo-controls">
+                <div class="demo-case-label"><span>CHOOSE A DEMONSTRATION</span><small>Each case runs through the real local pipeline</small></div>
+                <div id="demoCasePicker" class="demo-case-picker" role="radiogroup" aria-label="Demonstration case"></div>
+                <div class="control-row">
+                  <div class="demo-file"><span id="demoFileIcon">PY</span><div><strong id="demoFileName">app.py</strong><small id="demoFileMeta">Loading cases…</small></div></div>
+                  <button type="submit" class="primary-button"><span>▶</span> Run selected demo</button>
+                </div>
+              </div>
+              <div id="liveControls" class="live-controls hidden">
+                <label>Owner<input id="ownerInput" autocomplete="off" placeholder="octocat" pattern="[A-Za-z0-9_.-]+" required></label>
+                <label>Repository<input id="repoInput" autocomplete="off" placeholder="hello-world" pattern="[A-Za-z0-9_.-]+" required></label>
+                <label class="pr-number">PR number<input id="numberInput" type="number" min="1" placeholder="42" required></label>
+                <button type="submit" class="primary-button"><span>▶</span> Review pull request</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="readiness surface">
+            <div class="section-heading"><div><span class="section-kicker">ENVIRONMENT</span><h3>Live readiness</h3></div><span id="readinessScore" class="score-ring">0%</span></div>
+            <div class="readiness-list" id="readinessList"></div>
+            <button class="text-button" data-view-link="configuration">View configuration →</button>
+          </article>
+        </div>
+
+        <div class="metric-grid">
+          <article class="metric-card"><span class="metric-icon cyan">⌘</span><div><small>Changed files</small><strong id="filesMetric">—</strong><em id="linesMetric">Awaiting review</em></div></article>
+          <article class="metric-card"><span class="metric-icon coral">!</span><div><small>Total findings</small><strong id="findingsMetric">—</strong><em id="severityMetric">No evidence yet</em></div></article>
+          <article class="metric-card"><span class="metric-icon violet">✦</span><div><small>Agent coverage</small><strong id="agentsMetric">4/4</strong><em>Parallel specialists</em></div></article>
+          <article class="metric-card"><span class="metric-icon green">✓</span><div><small>Validated fixes</small><strong id="fixesMetric">—</strong><em>GitHub-ready suggestions</em></div></article>
+        </div>
+
+        <div class="content-grid">
+          <article class="pipeline-panel surface">
+            <div class="section-heading">
+              <div><span class="section-kicker">CURRENT RUN</span><h3>Review pipeline</h3></div>
+              <span id="runState" class="run-state idle"><i></i>Ready</span>
+            </div>
+            <div class="pipeline" id="pipeline"></div>
+          </article>
+
+          <article class="activity-panel surface">
+            <div class="section-heading"><div><span class="section-kicker">SYSTEM SIGNAL</span><h3>Activity</h3></div><span class="live-dot">LIVE</span></div>
+            <div id="activityFeed" class="activity-feed">
+              <div class="empty-activity">Run a review to watch the evidence trail appear here.</div>
+            </div>
+          </article>
+        </div>
+
+        <article class="surface agent-panel">
+          <div class="section-heading"><div><span class="section-kicker">MULTI-AGENT ORCHESTRATION</span><h3>Specialist runs</h3></div><span class="muted">Concurrent fan-out · ranked fan-in</span></div>
+          <div class="agent-grid" id="agentGrid"></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-workflow">
+        <div class="page-intro"><span class="section-kicker">END-TO-END TRACE</span><h2>Every workflow, one evidence chain</h2><p>The dashboard maps each project deliverable to an observable stage. Select a stage to see its inputs, safeguards and outputs.</p></div>
+        <div class="workflow-layout">
+          <div id="workflowMap" class="workflow-map surface"></div>
+          <aside id="workflowDetail" class="workflow-detail surface"></aside>
+        </div>
+        <div class="path-grid">
+          <article class="surface path-card"><span>01</span><h3>Manual diff</h3><p><code>POST /review</code> accepts unified diff text. It is ideal for isolated demonstrations and never executes submitted code.</p></article>
+          <article class="surface path-card"><span>02</span><h3>GitHub PR</h3><p><code>POST /github/review</code> retrieves metadata and changed content, then runs the complete grounded review path.</p></article>
+          <article class="surface path-card"><span>03</span><h3>Signed webhook</h3><p><code>POST /webhooks/github</code> validates HMAC signatures and reacts only to supported pull-request actions.</p></article>
+          <article class="surface path-card"><span>04</span><h3>Academic evaluation</h3><p>The evaluation CLI compares static-only, single-agent and hybrid approaches against a held-out labelled JSONL corpus.</p></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-findings">
+        <div class="page-intro row"><div><span class="section-kicker">CONSOLIDATED OUTPUT</span><h2>Evidence-backed findings</h2><p>Deduplicated, severity-ranked and restricted to changed lines.</p></div><div class="filter-group" id="severityFilters"><button class="active" data-severity="ALL">All</button><button data-severity="CRITICAL">Critical</button><button data-severity="HIGH">High</button><button data-severity="MEDIUM">Medium</button><button data-severity="LOW">Low</button></div></div>
+        <div id="findingsList" class="findings-list surface"><div class="empty-state"><span>◇</span><h3>No review loaded</h3><p>Run the demo or connect a live pull request to inspect findings.</p></div></div>
+      </section>
+
+      <section class="view" id="view-history">
+        <div class="page-intro"><span class="section-kicker">POSTGRESQL REVIEW LOG</span><h2>Review history</h2><p>Look up persisted review runs for a repository.</p></div>
+        <article class="surface history-panel">
+          <form id="historyForm" class="history-form"><label>Repository<input id="historyRepo" placeholder="owner/repository" required pattern="[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"></label><button class="secondary-button" type="submit">Load history</button></form>
+          <div class="table-wrap"><table><thead><tr><th>Review</th><th>Repository</th><th>Pull request</th><th>Commit</th><th>Findings</th><th>Created</th></tr></thead><tbody id="historyRows"><tr><td colspan="6" class="table-empty">Enter a repository to query stored reviews.</td></tr></tbody></table></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-configuration">
+        <div class="page-intro"><span class="section-kicker">SAFE CONFIGURATION</span><h2>Runtime capabilities</h2><p>Only connection state is shown. Secret values never leave the server.</p></div>
+        <div class="config-grid" id="configGrid"></div>
+        <article class="surface safety-card"><div class="safety-icon">⌾</div><div><h3>Advisory by design</h3><p>The reviewer never approves or merges pull requests. Publishing is opt-in and always uses a GitHub <code>COMMENT</code> review. Repository content is treated as untrusted and is never executed.</p></div></article>
+      </section>
+    </main>
+  </div>
+
+  <template id="findingTemplate">
+    <article class="finding-card">
+      <div class="finding-head"><span class="severity-pill"></span><span class="finding-source"></span><span class="confidence"></span></div>
+      <h3></h3><p class="finding-message"></p>
+      <div class="code-location"><code></code></div>
+      <div class="evidence-block"><strong>Evidence</strong><p></p></div>
+      <div class="suggestion-block hidden"><strong>Validated suggestion</strong><pre><code></code></pre><p></p></div>
+    </article>
+  </template>
+  <script src="/assets/dashboard.js" defer></script>
+</body>
+</html>

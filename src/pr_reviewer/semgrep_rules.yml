@@ -1,0 +1,16 @@
+rules:
+  - id: python-dangerous-eval
+    languages: [python]
+    message: Avoid eval on data that may be attacker-controlled.
+    severity: ERROR
+    pattern: eval(...)
+  - id: python-shell-true
+    languages: [python]
+    message: shell=True can enable command injection.
+    severity: ERROR
+    pattern: subprocess.$FUNC(..., shell=True, ...)
+  - id: python-insecure-yaml-load
+    languages: [python]
+    message: Use yaml.safe_load for untrusted YAML.
+    severity: WARNING
+    pattern: yaml.load(...)
