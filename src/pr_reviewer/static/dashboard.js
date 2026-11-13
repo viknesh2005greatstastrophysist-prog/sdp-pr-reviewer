@@ -536,7 +536,7 @@ function clearResult() {
 
 function originForDemo(payload) {
   const demo = payload.demo_case || selectedDemo();
-  return { demo: true, label: demo ? `Example “${demo.title}”, ${demo.filename}. Reviewed on this server; not sent to GitHub.` : "Bundled example" };
+  return { demo: true, label: demo ? `Example “${demo.title}”, ${demo.filename}. Ruff and Semgrep ran for real; the four specialists are scripted stand-ins so demos never spend model quota. Not sent to GitHub.` : "Bundled example" };
 }
 
 function originForRecord(record, result) {
@@ -1092,7 +1092,7 @@ function renderWorkflow() {
     ["Fetch the pull request", "The GitHub REST API returns the metadata, head commit, unified diff and changed files. The demo uses a bundled pull request instead.", null],
     ["Map the changed lines", "Each diff hunk is parsed so every added line has its file line number and GitHub diff position, plus the function or class around it from the Python syntax tree.", null],
     ["Analyse in parallel", "Two branches run at the same time on the changed lines only.", [
-      ["Static analysis", [["Ruff", "lint and security rules"], ["Semgrep", "local rule set"]], "No shell, no cache, hard timeout. Matches are certain."],
+      ["Static analysis", [["Ruff", "lint and security rules"], ["Semgrep", "local rule set"]], "No shell, no cache, hard timeout. Rule matches are deterministic; whether they matter is for the reviewer to judge."],
       ["Four specialist agents", agentDefinitions.map((agent) => [agent.name, agent.copy.charAt(0).toLowerCase() + agent.copy.slice(1)]), "Structured output and a timeout per agent. A failure is isolated."],
     ]],
     ["Validate, deduplicate and rank", "Anything not on an added line or below the minimum confidence is dropped. Reports of the same problem are merged. The rest is ordered by severity, then confidence.", null],

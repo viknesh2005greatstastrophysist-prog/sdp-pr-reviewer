@@ -56,7 +56,7 @@ DEMO_CASES = {
         DemoCase(
             case_id="full-spectrum",
             title="Full spectrum",
-            subtitle="Security, performance, style and architecture signals in one review.",
+            subtitle="Security, performance and architecture problems in one small change.",
             filename="app.py",
             icon="✦",
             accent="violet",

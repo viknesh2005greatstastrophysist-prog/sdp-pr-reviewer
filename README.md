@@ -162,6 +162,15 @@ OpenAI-compatible endpoint), `AGENT_TIMEOUT=120`, `PUBLISH_REVIEWS=false` and `R
 The free Render PostgreSQL database expires after 30 days, and review history and sessions are
 lost with it. Treat the free tier as a demonstration, and export anything worth keeping.
 
+## Language-model fallback
+
+`LLM_API_KEY` / `LLM_MODEL` / `LLM_BASE_URL` select the primary OpenAI-compatible provider (the live
+server uses Gemini). When `LLM_FALLBACK_API_KEY` is set, a call that the primary rejects for rate
+limits or exhausted quota is retried on the fallback provider (default: Groq,
+`openai/gpt-oss-120b`, which supports strict JSON-schema output). Requests use a strict-mode
+schema so both providers accept them. If both fail, that one agent is marked failed and the rest
+of the review completes. The evaluation never uses the fallback: each benchmark runs on one model.
+
 ## Review modes and the verification pass
 
 - **Focused (default).** Shows findings that indicate a likely defect: Semgrep rules, and Ruff
@@ -175,8 +184,10 @@ agent findings against the changed code. Ungrounded findings are dropped and the
 how many. Static findings are never sent to the verifier. If the verifier call fails, the findings
 are kept and a warning is added. The verifier can only remove findings.
 
-Focused-mode thresholds and caps were chosen on the development split of the evaluation corpus.
-See `evaluation/RESULTS.md` and `docs/EVALUATION.md`.
+Focused mode uses principled defaults (defect-indicating rule families, a confidence floor and a
+per-file cap). Tuning them on the development split produced no measurable signal on the cases
+that completed, so the defaults were kept; nothing was tuned on the test split. See
+`evaluation/RESULTS.md` and `docs/EVALUATION.md`.
 
 ## Publishing policy
 
