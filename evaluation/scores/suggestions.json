@@ -1,0 +1,1166 @@
+{
+  "generated_for": "offline suggestion-quality scoring; no LLM calls",
+  "inputs": [
+    "results_injected_all60.json",
+    "results_injected_paired.json",
+    "results_human_test_gemini-3-flash-preview_postfix.json",
+    "results_human_paired.json"
+  ],
+  "n_unique_validated_suggestions": 27,
+  "dedupe_key": "case_id+path+start_line+end_line+replacement",
+  "definitions": {
+    "applies": "range within file; replacement substitutes exactly lines start..end",
+    "whole_file_parses": "ast.parse of the full patched file",
+    "resolves_static": "ruff code from rule_id stops firing within +-2 lines of the finding (only where it fired before); semgrep rules not re-run",
+    "hits_defect": "injected cases: suggestion range contains the injected defect line",
+    "restores_original": "hits_defect and replaced lines equal (whitespace-normalised) the original code",
+    "changes_defect_line": "hits_defect and the defective line text no longer appears",
+    "no_collateral": "patched file parses and gains no new ruff E9/F errors",
+    "denominators": "each metric's n counts only suggestions where it is applicable",
+    "source_class": "static = purely ruff/semgrep finding; agent = any LLM source"
+  },
+  "groups": {
+    "all": {
+      "n_suggestions": 27,
+      "applies": {
+        "k": 27,
+        "n": 27,
+        "rate": 1.0,
+        "wilson95": [
+          0.8754,
+          1.0
+        ]
+      },
+      "whole_file_parses": {
+        "k": 20,
+        "n": 27,
+        "rate": 0.7407,
+        "wilson95": [
+          0.5532,
+          0.8683
+        ]
+      },
+      "resolves_static": {
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "wilson95": null
+      },
+      "hits_defect": {
+        "k": 13,
+        "n": 24,
+        "rate": 0.5417,
+        "wilson95": [
+          0.3507,
+          0.7211
+        ]
+      },
+      "restores_original": {
+        "k": 1,
+        "n": 24,
+        "rate": 0.0417,
+        "wilson95": [
+          0.0074,
+          0.2024
+        ]
+      },
+      "changes_defect_line": {
+        "k": 13,
+        "n": 24,
+        "rate": 0.5417,
+        "wilson95": [
+          0.3507,
+          0.7211
+        ]
+      },
+      "no_collateral": {
+        "k": 18,
+        "n": 27,
+        "rate": 0.6667,
+        "wilson95": [
+          0.4782,
+          0.8136
+        ]
+      }
+    },
+    "benchmark=human": {
+      "n_suggestions": 3,
+      "applies": {
+        "k": 3,
+        "n": 3,
+        "rate": 1.0,
+        "wilson95": [
+          0.4385,
+          1.0
+        ]
+      },
+      "whole_file_parses": {
+        "k": 3,
+        "n": 3,
+        "rate": 1.0,
+        "wilson95": [
+          0.4385,
+          1.0
+        ]
+      },
+      "resolves_static": {
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "wilson95": null
+      },
+      "hits_defect": {
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "wilson95": null
+      },
+      "restores_original": {
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "wilson95": null
+      },
+      "changes_defect_line": {
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "wilson95": null
+      },
+      "no_collateral": {
+        "k": 3,
+        "n": 3,
+        "rate": 1.0,
+        "wilson95": [
+          0.4385,
+          1.0
+        ]
+      }
+    },
+    "benchmark=human,source=agent": {
+      "n_suggestions": 3,
+      "applies": {
+        "k": 3,
+        "n": 3,
+        "rate": 1.0,
+        "wilson95": [
+          0.4385,
+          1.0
+        ]
+      },
+      "whole_file_parses": {
+        "k": 3,
+        "n": 3,
+        "rate": 1.0,
+        "wilson95": [
+          0.4385,
+          1.0
+        ]
+      },
+      "resolves_static": {
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "wilson95": null
+      },
+      "hits_defect": {
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "wilson95": null
+      },
+      "restores_original": {
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "wilson95": null
+      },
+      "changes_defect_line": {
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "wilson95": null
+      },
+      "no_collateral": {
+        "k": 3,
+        "n": 3,
+        "rate": 1.0,
+        "wilson95": [
+          0.4385,
+          1.0
+        ]
+      }
+    },
+    "benchmark=injected": {
+      "n_suggestions": 24,
+      "applies": {
+        "k": 24,
+        "n": 24,
+        "rate": 1.0,
+        "wilson95": [
+          0.862,
+          1.0
+        ]
+      },
+      "whole_file_parses": {
+        "k": 17,
+        "n": 24,
+        "rate": 0.7083,
+        "wilson95": [
+          0.5083,
+          0.8509
+        ]
+      },
+      "resolves_static": {
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "wilson95": null
+      },
+      "hits_defect": {
+        "k": 13,
+        "n": 24,
+        "rate": 0.5417,
+        "wilson95": [
+          0.3507,
+          0.7211
+        ]
+      },
+      "restores_original": {
+        "k": 1,
+        "n": 24,
+        "rate": 0.0417,
+        "wilson95": [
+          0.0074,
+          0.2024
+        ]
+      },
+      "changes_defect_line": {
+        "k": 13,
+        "n": 24,
+        "rate": 0.5417,
+        "wilson95": [
+          0.3507,
+          0.7211
+        ]
+      },
+      "no_collateral": {
+        "k": 15,
+        "n": 24,
+        "rate": 0.625,
+        "wilson95": [
+          0.4271,
+          0.7884
+        ]
+      }
+    },
+    "benchmark=injected,source=agent": {
+      "n_suggestions": 24,
+      "applies": {
+        "k": 24,
+        "n": 24,
+        "rate": 1.0,
+        "wilson95": [
+          0.862,
+          1.0
+        ]
+      },
+      "whole_file_parses": {
+        "k": 17,
+        "n": 24,
+        "rate": 0.7083,
+        "wilson95": [
+          0.5083,
+          0.8509
+        ]
+      },
+      "resolves_static": {
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "wilson95": null
+      },
+      "hits_defect": {
+        "k": 13,
+        "n": 24,
+        "rate": 0.5417,
+        "wilson95": [
+          0.3507,
+          0.7211
+        ]
+      },
+      "restores_original": {
+        "k": 1,
+        "n": 24,
+        "rate": 0.0417,
+        "wilson95": [
+          0.0074,
+          0.2024
+        ]
+      },
+      "changes_defect_line": {
+        "k": 13,
+        "n": 24,
+        "rate": 0.5417,
+        "wilson95": [
+          0.3507,
+          0.7211
+        ]
+      },
+      "no_collateral": {
+        "k": 15,
+        "n": 24,
+        "rate": 0.625,
+        "wilson95": [
+          0.4271,
+          0.7884
+        ]
+      }
+    },
+    "source=agent": {
+      "n_suggestions": 27,
+      "applies": {
+        "k": 27,
+        "n": 27,
+        "rate": 1.0,
+        "wilson95": [
+          0.8754,
+          1.0
+        ]
+      },
+      "whole_file_parses": {
+        "k": 20,
+        "n": 27,
+        "rate": 0.7407,
+        "wilson95": [
+          0.5532,
+          0.8683
+        ]
+      },
+      "resolves_static": {
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "wilson95": null
+      },
+      "hits_defect": {
+        "k": 13,
+        "n": 24,
+        "rate": 0.5417,
+        "wilson95": [
+          0.3507,
+          0.7211
+        ]
+      },
+      "restores_original": {
+        "k": 1,
+        "n": 24,
+        "rate": 0.0417,
+        "wilson95": [
+          0.0074,
+          0.2024
+        ]
+      },
+      "changes_defect_line": {
+        "k": 13,
+        "n": 24,
+        "rate": 0.5417,
+        "wilson95": [
+          0.3507,
+          0.7211
+        ]
+      },
+      "no_collateral": {
+        "k": 18,
+        "n": 27,
+        "rate": 0.6667,
+        "wilson95": [
+          0.4782,
+          0.8136
+        ]
+      }
+    }
+  },
+  "suggestions": [
+    {
+      "case_id": "inj__bug-hunter__02__scikit-learn_scikit-learn",
+      "path": "doc/sphinxext/autoshortsummary.py",
+      "start_line": 18,
+      "end_line": 21,
+      "finding_line": 20,
+      "sources": [
+        "architecture"
+      ],
+      "rule_ids": [
+        "sql-injection-autodocumenter"
+      ],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "    @classmethod\n    def can_document_member(cls, member, membername, isattr, parent):\n        \"\"\"Allow documenting any object.\"\"\"\n        return True",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": true,
+      "restores_original": false,
+      "changes_defect_line": true,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__bug-hunter__02__scikit-learn_scikit-learn",
+      "path": "doc/sphinxext/autoshortsummary.py",
+      "start_line": 20,
+      "end_line": 21,
+      "finding_line": 20,
+      "sources": [
+        "generalist"
+      ],
+      "rule_ids": [
+        "python-sql-injection"
+      ],
+      "seen_in": [
+        "results_injected_all60.json:single-agent",
+        "results_injected_paired.json:single-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "        sqlite3.connect(\"app.db\").execute(\"SELECT * FROM users WHERE name = ?\", (member,))",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": true,
+      "restores_original": false,
+      "changes_defect_line": true,
+      "no_collateral": false,
+      "head_parses": true,
+      "new_ruff_E9_F": [
+        "F821: Undefined name `sqlite3`"
+      ]
+    },
+    {
+      "case_id": "inj__bug-hunter__02__scikit-learn_scikit-learn",
+      "path": "doc/sphinxext/autoshortsummary.py",
+      "start_line": 21,
+      "end_line": 21,
+      "finding_line": 21,
+      "sources": [
+        "bug-hunter+style"
+      ],
+      "rule_ids": [
+        "python-sql-injection"
+      ],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "        sqlite3.connect(\"app.db\").execute(\"SELECT * FROM users WHERE name = ?\", (member,))",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": true,
+      "restores_original": false,
+      "changes_defect_line": true,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__bug-hunter__03__psf_requests",
+      "path": "requests/packages/urllib3/poolmanager.py",
+      "start_line": 258,
+      "end_line": 260,
+      "finding_line": 259,
+      "sources": [
+        "bug-hunter+architecture+ruff+semgrep+style",
+        "generalist+ruff+semgrep"
+      ],
+      "rule_ids": [
+        "python-eval-untrusted-input"
+      ],
+      "seen_in": [
+        "results_injected_all60.json:single-agent",
+        "results_injected_paired.json:hybrid-multi-agent",
+        "results_injected_paired.json:single-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "def proxy_from_url(url, **kw):\n    return ProxyManager(proxy_url=url, **kw)",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": true,
+      "restores_original": true,
+      "changes_defect_line": true,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__bug-hunter__04__pydantic_pydantic",
+      "path": "pydantic/warnings.py",
+      "start_line": 58,
+      "end_line": 59,
+      "finding_line": 58,
+      "sources": [
+        "architecture"
+      ],
+      "rule_ids": [
+        "incorrect-deprecation-version"
+      ],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "    def __init__(self, message: str, *args: object) -> None:\n        super().__init__(message, *args, since=(2, 6), expected_removal=(3, 0))",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": false,
+      "restores_original": false,
+      "changes_defect_line": false,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__bug-hunter__05__pallets_werkzeug",
+      "path": "src/werkzeug/sansio/utils.py",
+      "start_line": 62,
+      "end_line": 62,
+      "finding_line": 62,
+      "sources": [
+        "bug-hunter"
+      ],
+      "rule_ids": [
+        "py-attribute-error-tuple"
+      ],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": false,
+      "restores_original": false,
+      "changes_defect_line": false,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__bug-hunter__05__pallets_werkzeug",
+      "path": "src/werkzeug/sansio/utils.py",
+      "start_line": 77,
+      "end_line": 77,
+      "finding_line": 77,
+      "sources": [
+        "architecture",
+        "performance"
+      ],
+      "rule_ids": [],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": false,
+      "restores_original": false,
+      "changes_defect_line": false,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__bug-hunter__05__pallets_werkzeug",
+      "path": "src/werkzeug/sansio/utils.py",
+      "start_line": 84,
+      "end_line": 84,
+      "finding_line": 84,
+      "sources": [
+        "style"
+      ],
+      "rule_ids": [],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": false,
+      "restores_original": false,
+      "changes_defect_line": false,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__bug-hunter__06__encode_httpx",
+      "path": "httpx/_compat.py",
+      "start_line": 54,
+      "end_line": 55,
+      "finding_line": 55,
+      "sources": [
+        "architecture+bug-hunter+ruff+semgrep"
+      ],
+      "rule_ids": [
+        "arbitrary-command-execution"
+      ],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": true,
+      "restores_original": false,
+      "changes_defect_line": true,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__bug-hunter__06__encode_httpx",
+      "path": "httpx/_compat.py",
+      "start_line": 54,
+      "end_line": 56,
+      "finding_line": 55,
+      "sources": [
+        "generalist+ruff+semgrep"
+      ],
+      "rule_ids": [
+        "python-subprocess-shell-injection"
+      ],
+      "seen_in": [
+        "results_injected_all60.json:single-agent",
+        "results_injected_paired.json:single-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": true,
+      "restores_original": false,
+      "changes_defect_line": true,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__bug-hunter__07__Kludex_starlette",
+      "path": "starlette/middleware/wsgi.py",
+      "start_line": 95,
+      "end_line": 95,
+      "finding_line": 95,
+      "sources": [
+        "performance"
+      ],
+      "rule_ids": [
+        "python-eval-performance"
+      ],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "parsed_send = send",
+      "applies": true,
+      "whole_file_parses": false,
+      "resolves_static": null,
+      "hits_defect": false,
+      "restores_original": false,
+      "changes_defect_line": false,
+      "no_collateral": false,
+      "head_parses": true,
+      "new_ruff_E9_F": [
+        "invalid-syntax: Unexpected indentation",
+        "invalid-syntax: unindent does not match any outer indentation level",
+        "invalid-syntax: Expected dedent, found end of file"
+      ]
+    },
+    {
+      "case_id": "inj__bug-hunter__07__Kludex_starlette",
+      "path": "starlette/middleware/wsgi.py",
+      "start_line": 105,
+      "end_line": 105,
+      "finding_line": 105,
+      "sources": [
+        "architecture",
+        "bug-hunter",
+        "generalist"
+      ],
+      "rule_ids": [
+        "eval-on-send",
+        "python-eval-security"
+      ],
+      "seen_in": [
+        "results_injected_all60.json:single-agent",
+        "results_injected_paired.json:hybrid-multi-agent",
+        "results_injected_paired.json:single-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "parsed_send = send",
+      "applies": true,
+      "whole_file_parses": false,
+      "resolves_static": null,
+      "hits_defect": false,
+      "restores_original": false,
+      "changes_defect_line": false,
+      "no_collateral": false,
+      "head_parses": true,
+      "new_ruff_E9_F": [
+        "invalid-syntax: Expected an indented block after `with` statement",
+        "invalid-syntax: Unexpected indentation",
+        "invalid-syntax: unindent does not match any outer indentation level",
+        "invalid-syntax: Expected dedent, found end of file"
+      ]
+    },
+    {
+      "case_id": "inj__bug-hunter__08__encode_httpx",
+      "path": "setup.py",
+      "start_line": 36,
+      "end_line": 36,
+      "finding_line": 36,
+      "sources": [
+        "generalist"
+      ],
+      "rule_ids": [
+        "sql-injection"
+      ],
+      "seen_in": [
+        "results_injected_all60.json:single-agent",
+        "results_injected_paired.json:single-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "    sqlite3.connect(\"app.db\").execute(\"SELECT * FROM users WHERE name = ?\", (package,))",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": true,
+      "restores_original": false,
+      "changes_defect_line": true,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__bug-hunter__09__encode_httpx",
+      "path": "httpx/_transports/asgi.py",
+      "start_line": 99,
+      "end_line": 100,
+      "finding_line": 99,
+      "sources": [
+        "bug-hunter"
+      ],
+      "rule_ids": [
+        "command-injection"
+      ],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "",
+      "applies": true,
+      "whole_file_parses": false,
+      "resolves_static": null,
+      "hits_defect": false,
+      "restores_original": false,
+      "changes_defect_line": false,
+      "no_collateral": false,
+      "head_parses": true,
+      "new_ruff_E9_F": [
+        "invalid-syntax: Unexpected indentation",
+        "invalid-syntax: Invalid annotated assignment target",
+        "invalid-syntax: Expected a statement"
+      ]
+    },
+    {
+      "case_id": "inj__bug-hunter__09__encode_httpx",
+      "path": "httpx/_transports/asgi.py",
+      "start_line": 105,
+      "end_line": 106,
+      "finding_line": 105,
+      "sources": [
+        "generalist"
+      ],
+      "rule_ids": [
+        "arbitrary-command-execution"
+      ],
+      "seen_in": [
+        "results_injected_all60.json:single-agent",
+        "results_injected_paired.json:single-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": false,
+      "restores_original": false,
+      "changes_defect_line": false,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__bug-hunter__10__python-poetry_poetry",
+      "path": "src/poetry/console/commands/check.py",
+      "start_line": 95,
+      "end_line": 96,
+      "finding_line": 95,
+      "sources": [
+        "bug-hunter+architecture"
+      ],
+      "rule_ids": [
+        "python-sql-injection"
+      ],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "        import sqlite3\n        sqlite3.connect(\"app.db\").execute(\"SELECT * FROM users WHERE name = ?\", (str(readme),))",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": false,
+      "restores_original": false,
+      "changes_defect_line": false,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__bug-hunter__11__psf_requests",
+      "path": "src/requests/__init__.py",
+      "start_line": 99,
+      "end_line": 108,
+      "finding_line": 103,
+      "sources": [
+        "architecture"
+      ],
+      "rule_ids": [
+        "unbound-local-error"
+      ],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "def _check_cryptography(cryptography_version: str) -> None:\n    try:\n        cryptography_version_list = list(map(int, cryptography_version.split(\".\")))\n    except ValueError:\n        return\n\n    if cryptography_version_list < [1, 3, 4]:\n        warning = f\"Old version of cryptography ({cryptography_version_list}) may cause slowdown.\"\n        warnings.warn(warning, RequestsDependencyWarning)",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": true,
+      "restores_original": false,
+      "changes_defect_line": true,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__bug-hunter__11__psf_requests",
+      "path": "src/requests/__init__.py",
+      "start_line": 102,
+      "end_line": 105,
+      "finding_line": 104,
+      "sources": [
+        "generalist"
+      ],
+      "rule_ids": [],
+      "seen_in": [
+        "results_injected_all60.json:single-agent",
+        "results_injected_paired.json:single-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "    try:\n        cryptography_version_list = list(map(int, cryptography_version.split(\".\")))\n    except ValueError:\n        return",
+      "applies": true,
+      "whole_file_parses": false,
+      "resolves_static": null,
+      "hits_defect": true,
+      "restores_original": false,
+      "changes_defect_line": true,
+      "no_collateral": false,
+      "head_parses": true,
+      "new_ruff_E9_F": [
+        "invalid-syntax: Expected an indented block after `try` statement"
+      ]
+    },
+    {
+      "case_id": "inj__bug-hunter__13__psf_requests",
+      "path": "src/requests/_types.py",
+      "start_line": 41,
+      "end_line": 41,
+      "finding_line": 41,
+      "sources": [
+        "performance+style+architecture+bug-hunter+ruff+semgrep"
+      ],
+      "rule_ids": [
+        "python-eval-performance"
+      ],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "parsed_request = request",
+      "applies": true,
+      "whole_file_parses": false,
+      "resolves_static": null,
+      "hits_defect": true,
+      "restores_original": false,
+      "changes_defect_line": true,
+      "no_collateral": false,
+      "head_parses": true,
+      "new_ruff_E9_F": [
+        "invalid-syntax: Unexpected indentation"
+      ]
+    },
+    {
+      "case_id": "inj__bug-hunter__15__Kludex_starlette",
+      "path": "starlette/middleware/gzip.py",
+      "start_line": 217,
+      "end_line": 220,
+      "finding_line": 218,
+      "sources": [
+        "architecture+bug-hunter"
+      ],
+      "rule_ids": [
+        "rce-subprocess-shell"
+      ],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": true,
+      "restores_original": false,
+      "changes_defect_line": true,
+      "no_collateral": false,
+      "head_parses": true,
+      "new_ruff_E9_F": [
+        "F821: Undefined name `body`",
+        "F821: Undefined name `more_body`"
+      ]
+    },
+    {
+      "case_id": "inj__performance__05__encode_httpx",
+      "path": "httpx/_compat.py",
+      "start_line": 47,
+      "end_line": 50,
+      "finding_line": 48,
+      "sources": [
+        "architecture"
+      ],
+      "rule_ids": [],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "        context.minimum_version = ssl.TLSVersion.TLSv1_2",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": true,
+      "restores_original": false,
+      "changes_defect_line": true,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__performance__06__Kludex_starlette",
+      "path": "starlette/middleware/wsgi.py",
+      "start_line": 104,
+      "end_line": 104,
+      "finding_line": 104,
+      "sources": [
+        "bug-hunter"
+      ],
+      "rule_ids": [
+        "invalid-iteration-over-send"
+      ],
+      "seen_in": [
+        "results_injected_paired.json:hybrid-multi-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "# Removed invalid iteration over send callable",
+      "applies": true,
+      "whole_file_parses": false,
+      "resolves_static": null,
+      "hits_defect": false,
+      "restores_original": false,
+      "changes_defect_line": false,
+      "no_collateral": false,
+      "head_parses": true,
+      "new_ruff_E9_F": [
+        "invalid-syntax: Unexpected indentation"
+      ]
+    },
+    {
+      "case_id": "inj__performance__07__encode_httpx",
+      "path": "setup.py",
+      "start_line": 14,
+      "end_line": 16,
+      "finding_line": 14,
+      "sources": [
+        "generalist"
+      ],
+      "rule_ids": [
+        "setup-sqlite-execution"
+      ],
+      "seen_in": [
+        "results_injected_all60.json:single-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": true,
+      "restores_original": false,
+      "changes_defect_line": true,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "inj__performance__13__Kludex_starlette",
+      "path": "starlette/middleware/gzip.py",
+      "start_line": 209,
+      "end_line": 214,
+      "finding_line": 210,
+      "sources": [
+        "generalist"
+      ],
+      "rule_ids": [],
+      "seen_in": [
+        "results_injected_all60.json:single-agent"
+      ],
+      "benchmark": "injected",
+      "source_class": "agent",
+      "replacement": "",
+      "applies": true,
+      "whole_file_parses": false,
+      "resolves_static": null,
+      "hits_defect": false,
+      "restores_original": false,
+      "changes_defect_line": false,
+      "no_collateral": false,
+      "head_parses": true,
+      "new_ruff_E9_F": [
+        "invalid-syntax: Unexpected indentation"
+      ]
+    },
+    {
+      "case_id": "pallets__flask__3814",
+      "path": "tests/test_json_encoder.py",
+      "start_line": 12,
+      "end_line": 12,
+      "finding_line": 12,
+      "sources": [
+        "generalist"
+      ],
+      "rule_ids": [],
+      "seen_in": [
+        "results_human_test_gemini-3-flash-preview_postfix.json:single-agent"
+      ],
+      "benchmark": "human",
+      "source_class": "agent",
+      "replacement": "",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": null,
+      "restores_original": null,
+      "changes_defect_line": null,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "pallets__flask__3814",
+      "path": "tests/test_json_encoder.py",
+      "start_line": 14,
+      "end_line": 14,
+      "finding_line": 14,
+      "sources": [
+        "generalist"
+      ],
+      "rule_ids": [],
+      "seen_in": [
+        "results_human_test_gemini-3-flash-preview_postfix.json:single-agent"
+      ],
+      "benchmark": "human",
+      "source_class": "agent",
+      "replacement": "",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": null,
+      "restores_original": null,
+      "changes_defect_line": null,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    },
+    {
+      "case_id": "pallets__flask__3814",
+      "path": "tests/test_json_encoder.py",
+      "start_line": 15,
+      "end_line": 15,
+      "finding_line": 15,
+      "sources": [
+        "generalist"
+      ],
+      "rule_ids": [],
+      "seen_in": [
+        "results_human_test_gemini-3-flash-preview_postfix.json:single-agent"
+      ],
+      "benchmark": "human",
+      "source_class": "agent",
+      "replacement": "    assert encoder_default == ObjectWithHTML.TEST_HTML",
+      "applies": true,
+      "whole_file_parses": true,
+      "resolves_static": null,
+      "hits_defect": null,
+      "restores_original": null,
+      "changes_defect_line": null,
+      "no_collateral": true,
+      "head_parses": true,
+      "new_ruff_E9_F": []
+    }
+  ]
+}

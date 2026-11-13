@@ -479,3 +479,35 @@ false positives from the injected paired subset (all splits, 31 in the pool). Co
 - Pre-fix agent output on the human benchmark was almost empty (1 finding in 30 cases); the cause
   was later found (mis-numbered lines dropped; fixed in commit 341b7ad) and section 0 re-runs it.
 - No human has yet checked the labels or the adjudication sample.
+
+## 10. Suggestion quality (offline, 2026-11-14)
+
+Scored by `scripts/score_suggestions.py` (no LLM calls; output `evaluation/scores/suggestions.json`).
+Unique validated suggestions (deduplicated by case, path, range and replacement across the four
+result files and all strategies): 27. Each is applied to the head-version file.
+Cells are k/n = rate [Wilson 95% CI]; n differs by column because a metric is scored only where it
+applies (defect metrics need an injected case; the static-rule metric needs a ruff code that fired
+near the finding). The injected benchmark's 24 and the human benchmark's 3 suggestions are all
+from LLM findings; no validated suggestion came from a pure ruff/semgrep finding, and none had a
+ruff-checkable rule that fired, so the static-resolution rate has n = 0 and is not reported.
+
+| Group | n | applies | whole file parses | no collateral | hits defect | restores original | changes defect line | resolves static rule |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| All | 27 | 27/27 = 1.00 [0.88, 1.00] | 20/27 = 0.74 [0.55, 0.87] | 18/27 = 0.67 [0.48, 0.81] | 13/24 = 0.54 [0.35, 0.72] | 1/24 = 0.04 [0.01, 0.20] | 13/24 = 0.54 [0.35, 0.72] | n/a (n=0) |
+| Agent (LLM) | 27 | 27/27 = 1.00 [0.88, 1.00] | 20/27 = 0.74 [0.55, 0.87] | 18/27 = 0.67 [0.48, 0.81] | 13/24 = 0.54 [0.35, 0.72] | 1/24 = 0.04 [0.01, 0.20] | 13/24 = 0.54 [0.35, 0.72] | n/a (n=0) |
+| Static (ruff/semgrep) | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
+| Injected benchmark | 24 | 24/24 = 1.00 [0.86, 1.00] | 17/24 = 0.71 [0.51, 0.85] | 15/24 = 0.62 [0.43, 0.79] | 13/24 = 0.54 [0.35, 0.72] | 1/24 = 0.04 [0.01, 0.20] | 13/24 = 0.54 [0.35, 0.72] | n/a (n=0) |
+| Human benchmark | 3 | 3/3 = 1.00 [0.44, 1.00] | 3/3 = 1.00 [0.44, 1.00] | 3/3 = 1.00 [0.44, 1.00] | n/a (n=0) | n/a (n=0) | n/a (n=0) | n/a (n=0) |
+
+What this shows: the existing validator checks only the snippet, but 27/27
+suggestions apply cleanly while only 20/27
+leave the whole file parseable. All seven failures are block-structure breaks (five flush-left replacements inside an indented block, two
+that delete or leave a block header orphaned), on files that parsed before, so a one-click "apply suggestion"
+would break the file. About half of the injected-defect
+suggestions touch the injected line (13/24) but only
+1/24 restore the original code.
+What it does not show: "parses", "touches the defect line" and "no new undefined names" are necessary
+conditions, not proof of a correct fix, and restoring the exact original line is a strict bar that
+rejects other valid fixes. No tests were run on patched code and no human judged the fixes. With
+n = 27 (24 injected, 3 human, mostly from a handful of cases) the intervals are wide and the
+suggestions within one case are not independent.
