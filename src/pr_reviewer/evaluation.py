@@ -50,6 +50,11 @@ class StrategyMetrics(BaseModel):
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     estimated_cost_usd: float | None = None
+    # Agent health: a strategy whose agents failed (quota, timeout) silently degrades to
+    # static-only results, so failures are reported next to the metrics they distort.
+    agent_runs: int = 0
+    agent_failures: int = 0
+    cases_with_agent_failure: int = 0
     # The flat counts above use the "category" policy; the same run under the other policy:
     location_only: PolicyMetrics | None = None
     per_category: dict[str, PolicyMetrics] = Field(default_factory=dict)
@@ -147,6 +152,8 @@ async def evaluate(
     *,
     not_run: dict[str, str] | None = None,
     environment: dict[str, Any] | None = None,
+    case_delay: float = 0.0,
+    usage: dict[str, tuple[int, int]] | None = None,
 ) -> EvaluationReport:
     reports: list[StrategyMetrics] = []
     adjudication: dict[str, list[Finding]] = {}
@@ -156,10 +163,17 @@ async def evaluate(
         by_category: dict[str, list[int]] = {}
         elapsed = 0.0
         strategy_false_positives: list[Finding] = []
-        for case in cases:
+        runs = failures = failed_cases = 0
+        for index, case in enumerate(cases):
+            if case_delay and index:
+                await asyncio.sleep(case_delay)
             started = time.perf_counter()
             result = await strategy(case)
             elapsed += time.perf_counter() - started
+            case_failures = sum(run.status != "success" for run in result.agent_runs)
+            runs += len(result.agent_runs)
+            failures += case_failures
+            failed_cases += bool(case_failures)
             matched, false_pos, missed = match_detail(result.findings, case.human_findings)
             tp += len(matched)
             fp += len(false_pos)
@@ -188,6 +202,11 @@ async def evaluate(
                 mean_latency_ms=elapsed * 1000 / len(cases),
                 location_only=prf(*loc),
                 per_category={key: prf(*by_category[key]) for key in sorted(by_category)},
+                agent_runs=runs,
+                agent_failures=failures,
+                cases_with_agent_failure=failed_cases,
+                prompt_tokens=(usage if usage is not None else {}).get(name, (None, None))[0],
+                completion_tokens=(usage if usage is not None else {}).get(name, (None, None))[1],
             )
         )
         adjudication[name] = strategy_false_positives
@@ -282,7 +301,20 @@ def build_strategies(config: Settings) -> dict[str, Strategy]:
             )
 
         strategies.update({"single-agent": single_agent, "hybrid-multi-agent": hybrid})
+        TOKEN_CLIENTS.update({"single-agent": single_client, "hybrid-multi-agent": hybrid_client})
     return strategies
+
+
+# Strategy name -> LLM client, so observed token usage can be reported per strategy.
+TOKEN_CLIENTS: dict[str, OpenAICompatibleClient] = {}
+
+
+class _LiveUsage(dict):
+    """Reads token counters at report time, after the strategy has run."""
+
+    def get(self, key, default=None):
+        client = TOKEN_CLIENTS.get(key)
+        return (client.prompt_tokens, client.completion_tokens) if client else default
 
 
 def main() -> None:
@@ -291,20 +323,35 @@ def main() -> None:
     )
     parser.add_argument("corpus", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--strategies", help="comma-separated subset, e.g. single-agent,hybrid-multi-agent"
+    )
+    parser.add_argument("--limit", type=int, help="evaluate only the first N cases")
+    parser.add_argument(
+        "--case-delay", type=float, default=0.0, help="seconds between cases (rate limits)"
+    )
     args = parser.parse_args()
     config = Settings.from_env()
     strategies = build_strategies(config)
+    if args.strategies:
+        wanted = {item.strip() for item in args.strategies.split(",") if item.strip()}
+        strategies = {name: run for name, run in strategies.items() if name in wanted}
     not_run = {
         name: "LLM_API_KEY not set; agent strategy was not run"
         for name in ("single-agent", "hybrid-multi-agent")
         if name not in strategies
     }
+    cases = load_jsonl(args.corpus)
+    if args.limit:
+        cases = cases[: args.limit]
     report = asyncio.run(
         evaluate(
-            load_jsonl(args.corpus),
+            cases,
             strategies,
             not_run=not_run,
             environment=collect_environment(config, args.corpus),
+            case_delay=args.case_delay,
+            usage=_LiveUsage(),
         )
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
