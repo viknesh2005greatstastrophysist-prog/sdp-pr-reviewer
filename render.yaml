@@ -29,7 +29,7 @@ services:
         value: "guide:pbkdf2_sha256$600000$7+kwGUSFIGVy/Lbwb1SKrA==$G+/UvnPMdWFSyfOkHJO2OGZqXQBL1DtvpTp+e6Ibi9s=,team61:pbkdf2_sha256$600000$QR7LkxCR1K9nrRXTkZ34Zw==$yDUp6qyj90htJ4S7ZNqe2/dCpBrkbko5Z1JaNBwoAYE=,evaluator:pbkdf2_sha256$600000$RqEKKR6SEUlGMaeACrMEWw==$wUOA0faWnjy0Ut8UuJTsTT2L/vWmAQiIJ3WQ19glhiw="
       # Any OpenAI-compatible provider works; Gemini's free tier is the default here.
       - key: LLM_MODEL
-        value: gemini-2.5-flash
+        value: gemini-3.1-flash-lite
       - key: LLM_BASE_URL
         value: https://generativelanguage.googleapis.com/v1beta/openai
       - key: AGENT_TIMEOUT
