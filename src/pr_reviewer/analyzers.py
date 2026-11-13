@@ -100,6 +100,9 @@ class StaticAnalyzer:
                     )
                     if not path or line not in changed.get(path, set()):
                         continue
+                    rule = item.get("code") if tool == "ruff" else item.get("check_id")
+                    if tool == "ruff" and is_test_path(path) and rule in TEST_EXEMPT_RULES:
+                        continue  # asserts, test passwords, magic values: normal in tests
                     code = item.get("code") if tool == "ruff" else item.get("check_id")
                     message = (
                         item.get("message", "")
@@ -134,7 +137,10 @@ class StaticAnalyzer:
     @staticmethod
     def _severity(tool: str, item: dict) -> Severity:
         if tool == "ruff":
-            return Severity.HIGH if str(item.get("code", "")).startswith("S") else Severity.LOW
+            code = str(item.get("code", ""))
+            if code in LOW_RISK_SECURITY_RULES:
+                return Severity.LOW
+            return Severity.HIGH if code.startswith("S") else Severity.LOW
         value = str(item.get("extra", {}).get("severity", "WARNING")).upper()
         return {"ERROR": Severity.HIGH, "WARNING": Severity.MEDIUM}.get(value, Severity.LOW)
 
@@ -158,3 +164,20 @@ def static_category(tool: str, code: str | None) -> str:
     if rule.startswith(_BUG_PREFIXES):
         return "bug-hunter"
     return "style"
+
+
+# Rules that projects conventionally exempt in tests (ruff per-file-ignores for tests/**).
+TEST_EXEMPT_RULES = {"S101", "S105", "S106", "S107", "S108", "S311", "PLR2004"}
+# Bandit-derived rules that flag a pattern, not a vulnerability, outside tests.
+LOW_RISK_SECURITY_RULES = {"S101", "S311", "S110", "S112"}
+
+
+def is_test_path(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1]
+    parts = path.split("/")
+    return (
+        name.startswith("test_")
+        or name.endswith("_test.py")
+        or name == "conftest.py"
+        or any(part in {"tests", "test", "testing"} for part in parts[:-1])
+    )
