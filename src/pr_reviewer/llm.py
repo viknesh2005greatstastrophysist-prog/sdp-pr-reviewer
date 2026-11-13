@@ -44,7 +44,7 @@ class OpenAICompatibleClient:
                 "json_schema": {
                     "name": schema.__name__,
                     "strict": True,
-                    "schema": schema.model_json_schema(),
+                    "schema": strict_json_schema(schema),
                 },
             },
         }
@@ -74,7 +74,7 @@ class OpenAICompatibleClient:
                     content = "".join(
                         part.get("text", "") for part in content if isinstance(part, dict)
                     )
-                return schema.model_validate(json.loads(_strip_fence(content)))
+                return schema.model_validate(_drop_nulls(json.loads(_strip_fence(content))))
             except (httpx.HTTPError, KeyError, TypeError, json.JSONDecodeError, ValueError) as exc:
                 if attempt < self.max_retries:
                     await asyncio.sleep(min(2**attempt, 4))
@@ -194,3 +194,59 @@ def build_llm_client(settings, timeout: float | None = None):
         timeout=timeout,
     )
     return FallbackLLMClient(primary, fallback)
+
+
+def strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """JSON schema that satisfies OpenAI-style strict mode (required by Groq, accepted by others).
+
+    Strict mode needs every object to list all its properties in ``required`` and to forbid
+    extra keys. Fields that are optional in the model become required-but-nullable; the
+    nulls are dropped again before validation so the model's own defaults apply.
+    """
+    schema = model.model_json_schema()
+    defs = schema.pop("$defs", {})
+
+    def resolve(node: Any) -> Any:
+        if isinstance(node, list):
+            return [resolve(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        if "$ref" in node:
+            return resolve(dict(defs[node["$ref"].rsplit("/", 1)[-1]]))
+        out: dict[str, Any] = {}
+        for key, value in node.items():
+            if key in {"default", "title"}:
+                continue  # schema metadata, not field names
+            if key == "properties":
+                # A mapping of field name -> schema: keep every name, resolve each schema.
+                out[key] = {name: resolve(prop) for name, prop in value.items()}
+            else:
+                out[key] = resolve(value)
+        if out.get("type") == "object" and "properties" in out:
+            required = set(node.get("required", []))
+            for name, prop in node["properties"].items():
+                # Only fields whose default is None become nullable; fields with a real
+                # default (title, confidence...) stay required so the model fills them in.
+                is_none_default = isinstance(prop, dict) and prop.get("default", 0) is None
+                if name not in required and is_none_default:
+                    resolved = out["properties"][name]
+                    if not _allows_null(resolved):
+                        out["properties"][name] = {"anyOf": [resolved, {"type": "null"}]}
+            out["required"] = list(out["properties"])
+            out["additionalProperties"] = False
+        return out
+
+    return resolve(schema)
+
+
+def _allows_null(prop: dict[str, Any]) -> bool:
+    options = prop.get("anyOf", [prop])
+    return any(isinstance(item, dict) and item.get("type") == "null" for item in options)
+
+
+def _drop_nulls(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _drop_nulls(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_drop_nulls(item) for item in value]
+    return value

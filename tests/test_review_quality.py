@@ -185,3 +185,54 @@ def test_static_analysis_does_not_block_the_event_loop(monkeypatch):
     asyncio.run(scenario())
     during = [t for t in beats if window["start"] < t < window["end"]]
     assert len(during) >= 5, "the event loop stalled while the analyzer ran"
+
+
+def test_llm_schema_satisfies_strict_mode_and_keeps_field_names():
+    """Found on Render: Groq rejected the schema (400) because optional fields were not in
+    `required`; a first fix then deleted the `title` field by stripping metadata keys."""
+    from pr_reviewer.agents import AgentResponse
+    from pr_reviewer.llm import _drop_nulls, strict_json_schema
+
+    schema = strict_json_schema(AgentResponse)
+    assert "$defs" not in str(schema) and "$ref" not in str(schema)
+
+    def objects(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object" and "properties" in node:
+                yield node
+            for value in node.values():
+                yield from objects(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from objects(value)
+
+    for obj in objects(schema):
+        assert sorted(obj["required"]) == sorted(obj["properties"])
+        assert obj["additionalProperties"] is False
+    finding = schema["properties"]["findings"]["items"]
+    assert "title" in finding["properties"] and "confidence" in finding["properties"]
+    nullable = {k for k, v in finding["properties"].items() if "anyOf" in v}
+    assert nullable == {"end_line", "rule_id", "suggestion"}
+    parsed = AgentResponse.model_validate(
+        _drop_nulls(
+            {
+                "findings": [
+                    {
+                        "path": "a.py",
+                        "line": 1,
+                        "end_line": None,
+                        "category": "style",
+                        "severity": "LOW",
+                        "title": "t",
+                        "message": "m",
+                        "evidence": "e",
+                        "source": "style",
+                        "confidence": 0.5,
+                        "rule_id": None,
+                        "suggestion": None,
+                    }
+                ]
+            }
+        )
+    )
+    assert parsed.findings[0].end_line is None
