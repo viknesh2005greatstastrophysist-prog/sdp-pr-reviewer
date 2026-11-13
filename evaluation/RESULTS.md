@@ -64,8 +64,8 @@ version is used; otherwise write a separate result file.
 - **Corpus** (`evaluation/CORPUS.md`): merged PRs of 15 public Python repositories, inline human
   review comments on added `.py` lines, at least 2 kept comments per case; 144 cases, 534
   comments. Built 2026-11-14 with the GitHub API; code is fetched as data and never executed.
-- **Split by repository** (seeded hash, recorded in each case): dev = 7 repositories
-  (76 cases), test = 8 repositories (68 cases). Nothing was tuned on test.
+- **Split by repository** (seeded hash, recorded in each case): dev = 8 repositories
+  (76 cases), test = 7 repositories (68 cases). Nothing was tuned on test.
 - **Labels**: an LLM classifier (temperature 0, strict JSON schema) judged each comment
   *actionable* or not and gave a category. Actionable: 413 of
   534 (77.3%). Agreement with the keyword heuristic on

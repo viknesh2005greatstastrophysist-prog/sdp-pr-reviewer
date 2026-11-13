@@ -617,7 +617,11 @@ def test_corpus_card_main_and_later_changes(tmp_path, monkeypatch):
     )
     corpus_module.main()
     assert len(load_jsonl(output)) == 2 and (tmp_path / "CORPUS.md").exists()
-    monkeypatch.setattr(sys, "argv", ["build", "o/r", "--output", str(output), "--merge"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["build", "o/r", "--output", str(output), "--merge", "--card", str(tmp_path / "C2.md")],
+    )
     corpus_module.main()  # merge keeps the existing cases and adds none twice
     assert len(load_jsonl(output)) == 2
 
