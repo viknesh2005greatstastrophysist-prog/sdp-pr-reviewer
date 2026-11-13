@@ -128,7 +128,7 @@ def ruff_json(source: str, select: str) -> list[dict[str, Any]] | None:
         p = Path(tmp) / "f.py"
         p.write_text(source)
         r = subprocess.run(  # noqa: S603
-            [
+            [  # noqa: S607
                 "ruff",
                 "check",
                 "--isolated",
