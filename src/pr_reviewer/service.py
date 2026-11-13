@@ -63,9 +63,9 @@ class ReviewService:
                 review_mode=self.settings.review_mode,
                 verifier=self.verifier(),
             )
+            RefactoringEngine().validate_all(result.findings, result.files, checkout)
         result.head_sha = ref.head_sha
         result.warnings.extend(materialize_warnings)
-        RefactoringEngine().validate_all(result.findings, result.files)
         result.summary = executive_summary(result.findings, result.warnings)
         if self.store:
             result.review_id = self.store.save(ref, result, requested_by=requested_by)

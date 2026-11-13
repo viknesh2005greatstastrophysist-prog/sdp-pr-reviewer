@@ -20,6 +20,7 @@ from .llm import OpenAICompatibleClient
 from .models import AgentRun, Finding, ReviewResult
 from .parser import parse_diff
 from .pipeline import review_diff
+from .refactor import RefactoringEngine
 from .settings import Settings
 from .verifier import PROMPT_VERSION as VERIFIER_PROMPT_VERSION
 from .verifier import verify_findings
@@ -609,7 +610,7 @@ class AgentStrategy:
 
     async def __call__(self, case: EvaluationCase, only: set[str] | None = None) -> ReviewResult:
         chosen = [a for a in self.agents if only is None or a.category in only]
-        return await review_diff(
+        result = await review_diff(
             case.diff,
             case.repo_path,
             chosen,
@@ -618,6 +619,9 @@ class AgentStrategy:
             sequential_agents=self.sequential,
             agent_delay=self.agent_delay,
         )
+        # Same suggestion validation as the live service, so saved runs match production.
+        RefactoringEngine().validate_all(result.findings, result.files, case.repo_path)
+        return result
 
     async def rerun(self, case: EvaluationCase, names: list[str]) -> ReviewResult:
         return await self(case, only=set(names))

@@ -352,3 +352,55 @@ def test_diff_with_nothing_added_skips_the_model_call():
     only_deleted = MULTI_HUNK[MULTI_HUNK.index("diff --git a/gone.py") :]
     kept, warning, client = review_with([agent_finding(1, "x = 1")], diff=only_deleted)
     assert kept == [] and warning is None and client.prompts == []
+
+
+def test_suggestion_that_breaks_the_whole_file_is_rejected(tmp_path):
+    """A snippet can parse on its own yet orphan a block header in the real file."""
+    from pr_reviewer.models import Finding, Severity, Suggestion
+    from pr_reviewer.parser import parse_diff
+    from pr_reviewer.refactor import RefactoringEngine
+
+    source = "def f(x):\n    if x:\n        return eval(x)\n    return None\n"
+    diff = (
+        "diff --git a/m.py b/m.py\nnew file mode 100644\n--- /dev/null\n+++ b/m.py\n"
+        "@@ -0,0 +1,4 @@\n" + "".join("+" + row + "\n" for row in source.splitlines())
+    )
+    (tmp_path / "m.py").write_text(source)
+    files = parse_diff(diff)
+
+    def finding(start, end, replacement):
+        return Finding(
+            path="m.py",
+            line=3,
+            category="bug-hunter",
+            severity=Severity.HIGH,
+            title="eval",
+            message="eval on input",
+            evidence="return eval(x)",
+            confidence=0.9,
+            source="bug-hunter",
+            suggestion=Suggestion(
+                start_line=start,
+                end_line=end,
+                replacement=replacement,
+                rationale="use literal_eval",
+            ),
+        )
+
+    # Replacing the `if` header and its body with one statement leaves valid code.
+    good = finding(2, 3, "return ast.literal_eval(x) if x else None")
+    # Replacing only the `if` header line orphans the indented body below it.
+    bad = finding(2, 3, "pass")
+    bad.suggestion = bad.suggestion.model_copy(update={"end_line": 2})
+    bad.line = 2
+
+    engine = RefactoringEngine()
+    engine.validate_all([good, bad], files, tmp_path)
+    assert good.suggestion is not None and good.suggestion.validated
+    assert bad.suggestion is None
+    # Without the head file only the snippet is checked, so the bad one would pass.
+    unchecked = finding(2, 3, "pass")
+    unchecked.suggestion = unchecked.suggestion.model_copy(update={"end_line": 2})
+    unchecked.line = 2
+    engine.validate_all([unchecked], files)
+    assert unchecked.suggestion is not None

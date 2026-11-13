@@ -511,3 +511,19 @@ conditions, not proof of a correct fix, and restoring the exact original line is
 rejects other valid fixes. No tests were run on patched code and no human judged the fixes. With
 n = 27 (24 injected, 3 human, mostly from a handful of cases) the intervals are wide and the
 suggestions within one case are not independent.
+
+#### 10a. After the validator fix (same 27 saved suggestions, replayed)
+
+The saved runs never passed suggestions through `refactor.py` (the evaluation path skipped it), so
+the table above scores raw model output. The validator now applies the replacement to the head file
+and requires the whole patched file to parse (regression test
+`test_suggestion_that_breaks_the_whole_file_is_rejected`), and the evaluation path calls the same
+validator as the live service. Replaying the 27 suggestions through it: 21 accepted, 6 rejected.
+
+| Group | n | applies | whole file parses | no collateral | hits defect | restores original |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| After production validator | 21 | 21/21 = 1.00 [0.85, 1.00] | 21/21 = 1.00 [0.85, 1.00] | 19/21 = 0.90 [0.71, 0.97] | 12/18 = 0.67 [0.44, 0.84] | 1/18 = 0.06 [0.01, 0.26] |
+
+So no accepted suggestion can break the file's syntax any more; 2 of 21 still introduce a new
+undefined name (ruff F), which the validator does not check. Whether a fix is *correct* is still
+not measured: only 1 of 18 reproduces the exact original line, a strict bar.

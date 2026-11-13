@@ -8,6 +8,11 @@
   ],
   "n_unique_validated_suggestions": 27,
   "dedupe_key": "case_id+path+start_line+end_line+replacement",
+  "production_validator": {
+    "note": "saved runs did not pass suggestions through refactor.py; this replays them through the current validator (range, re-indent, snippet and whole-file parse)",
+    "accepted": 21,
+    "rejected": 6
+  },
   "definitions": {
     "applies": "range within file; replacement substitutes exactly lines start..end",
     "whole_file_parses": "ast.parse of the full patched file",
@@ -20,6 +25,69 @@
     "source_class": "static = purely ruff/semgrep finding; agent = any LLM source"
   },
   "groups": {
+    "after_production_validator": {
+      "n_suggestions": 21,
+      "applies": {
+        "k": 21,
+        "n": 21,
+        "rate": 1.0,
+        "wilson95": [
+          0.8454,
+          1.0
+        ]
+      },
+      "whole_file_parses": {
+        "k": 21,
+        "n": 21,
+        "rate": 1.0,
+        "wilson95": [
+          0.8454,
+          1.0
+        ]
+      },
+      "resolves_static": {
+        "k": 0,
+        "n": 0,
+        "rate": null,
+        "wilson95": null
+      },
+      "hits_defect": {
+        "k": 12,
+        "n": 18,
+        "rate": 0.6667,
+        "wilson95": [
+          0.4375,
+          0.8372
+        ]
+      },
+      "restores_original": {
+        "k": 1,
+        "n": 18,
+        "rate": 0.0556,
+        "wilson95": [
+          0.0099,
+          0.2576
+        ]
+      },
+      "changes_defect_line": {
+        "k": 12,
+        "n": 18,
+        "rate": 0.6667,
+        "wilson95": [
+          0.4375,
+          0.8372
+        ]
+      },
+      "no_collateral": {
+        "k": 19,
+        "n": 21,
+        "rate": 0.9048,
+        "wilson95": [
+          0.7109,
+          0.9735
+        ]
+      }
+    },
     "all": {
       "n_suggestions": 27,
       "applies": {

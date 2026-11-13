@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import ast
 import textwrap
+from pathlib import Path
 
 from .models import DiffFile, Finding, Suggestion
 
 
 class RefactoringEngine:
-    def validate(self, finding: Finding, diff_file: DiffFile) -> Suggestion | None:
+    def validate(
+        self, finding: Finding, diff_file: DiffFile, source: str | None = None
+    ) -> Suggestion | None:
+        """Accept a suggestion only if it is safe to apply as a GitHub suggestion.
+
+        ``source`` is the head version of the file. When given, the replacement is applied
+        to it and the whole patched file must still parse; a snippet that parses on its own
+        can still break the file (wrong indentation, an orphaned block header).
+        """
         suggestion = finding.suggestion
         if suggestion is None or finding.path != diff_file.path:
             return None
@@ -36,6 +45,8 @@ class RefactoringEngine:
                     ast.parse(wrapped)
                 except SyntaxError:
                     return None
+            if source is not None and not _patched_file_parses(source, suggestion):
+                return None
         validated = suggestion.model_copy(update={"validated": True})
         finding.suggestion = validated
         return validated
@@ -64,12 +75,50 @@ class RefactoringEngine:
             )
         return body
 
-    def validate_all(self, findings: list[Finding], files: list[DiffFile]) -> None:
+    def validate_all(
+        self, findings: list[Finding], files: list[DiffFile], root: str | Path | None = None
+    ) -> None:
+        """Validate every suggestion; ``root`` is the checkout holding the head files."""
         by_path = {item.path: item for item in files}
+        sources: dict[str, str | None] = {}
         for finding in findings:
             if finding.path in by_path and finding.suggestion:
-                if self.validate(finding, by_path[finding.path]) is None:
+                if root is not None and finding.path not in sources:
+                    sources[finding.path] = _read_head(Path(root), finding.path)
+                source = sources.get(finding.path)
+                if self.validate(finding, by_path[finding.path], source) is None:
                     finding.suggestion = None
+
+
+def _read_head(root: Path, path: str) -> str | None:
+    target = (root / path).resolve()
+    try:
+        target.relative_to(root.resolve())
+        return target.read_text(encoding="utf-8")
+    except (ValueError, OSError, UnicodeDecodeError):
+        return None
+
+
+def _patched_file_parses(source: str, suggestion: Suggestion) -> bool:
+    """Apply the replacement to the head file; it must still parse if the head did."""
+    lines = source.split("\n")
+    if suggestion.end_line > len(lines):
+        return False
+    try:
+        ast.parse(source)
+    except SyntaxError:
+        return True  # head already broken; the snippet checks above are all we can do
+    new = (
+        suggestion.replacement.rstrip("\n").split("\n")
+        if suggestion.replacement.strip("\n")
+        else []
+    )
+    patched = lines[: suggestion.start_line - 1] + new + lines[suggestion.end_line :]
+    try:
+        ast.parse("\n".join(patched))
+    except SyntaxError:
+        return False
+    return True
 
 
 def _reindent(replacement: str, diff_file: DiffFile, start_line: int) -> str:

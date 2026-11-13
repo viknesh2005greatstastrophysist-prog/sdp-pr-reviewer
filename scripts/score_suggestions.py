@@ -266,6 +266,52 @@ def summarise(recs: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
+def through_validator(
+    u: dict[str, Any], root: Path, diffs: dict[str, str]
+) -> dict[str, Any] | None:
+    """Run a saved suggestion through the production validator (refactor.py).
+
+    Returns the suggestion as the live service would publish it (re-indented), or None if
+    the validator rejects it. Saved runs predate validation in the evaluation path.
+    """
+    import sys
+
+    sys.path.insert(0, str(root / "src"))
+    from pr_reviewer.models import Finding, Severity, Suggestion
+    from pr_reviewer.parser import parse_diff
+    from pr_reviewer.refactor import RefactoringEngine
+
+    diff = diffs.get(u["case_id"])
+    if diff is None:
+        return None
+    files = [f for f in parse_diff(diff) if f.path == u["path"]]
+    base = root / ("evaluation/injected" if u["benchmark"] == "injected" else "evaluation/repos")
+    head = base / u["case_id"] / u["path"]
+    if not files or not head.exists():
+        return None
+    finding = Finding(
+        path=u["path"],
+        line=u["finding_line"],
+        category="bug-hunter",
+        severity=Severity.MEDIUM,
+        title="saved",
+        message="saved",
+        evidence="saved",
+        confidence=1.0,
+        source="agent",
+        suggestion=Suggestion(
+            start_line=u["start_line"],
+            end_line=u["end_line"],
+            replacement=u["replacement"],
+            rationale="saved",
+        ),
+    )
+    accepted = RefactoringEngine().validate(finding, files[0], head.read_text())
+    if accepted is None:
+        return None
+    return {**u, "replacement": accepted.replacement}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
@@ -282,7 +328,16 @@ def main() -> None:
     uniq = load_unique(eval_dir)
     recs = [score_one(u, root, inj_rows) for u in uniq]
 
-    groups: dict[str, list] = {"all": recs}
+    diffs = {cid: row["diff"] for cid, row in inj_rows.items()}
+    for line in (eval_dir / "corpus.jsonl").read_text().split("\n"):
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        diffs.setdefault(row["case_id"], row["diff"])
+    passed = [v for v in (through_validator(u, root, diffs) for u in uniq) if v is not None]
+    after = [score_one(v, root, inj_rows) for v in passed]
+
+    groups: dict[str, list] = {"all": recs, "after_production_validator": after}
     for r in recs:
         groups.setdefault(f"source={r['source_class']}", []).append(r)
         groups.setdefault(f"benchmark={r['benchmark']}", []).append(r)
@@ -292,6 +347,14 @@ def main() -> None:
         "inputs": RESULT_FILES,
         "n_unique_validated_suggestions": len(recs),
         "dedupe_key": "case_id+path+start_line+end_line+replacement",
+        "production_validator": {
+            "note": (
+                "saved runs did not pass suggestions through refactor.py; this replays them "
+                "through the current validator (range, re-indent, snippet and whole-file parse)"
+            ),
+            "accepted": len(after),
+            "rejected": len(recs) - len(after),
+        },
         "definitions": {
             "applies": "range within file; replacement substitutes exactly lines start..end",
             "whole_file_parses": "ast.parse of the full patched file",

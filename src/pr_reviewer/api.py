@@ -258,7 +258,7 @@ async def dashboard_demo(request: DemoReviewRequest | None = None):
             agents=demo_agents(case),
             agent_timeout=config.agent_timeout,
         )
-        RefactoringEngine().validate_all(result.findings, result.files)
+        RefactoringEngine().validate_all(result.findings, result.files, checkout)
         payload = result.model_dump(mode="json")
         payload["demo_case"] = case.metadata()
         return payload
