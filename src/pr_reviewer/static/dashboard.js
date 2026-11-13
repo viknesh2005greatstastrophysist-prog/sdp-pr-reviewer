@@ -453,7 +453,7 @@ async function loadAuth() {
   try {
     state.auth = await api("/auth/status");
   } catch (error) {
-    state.auth = { oauth_configured: false, authenticated: false, user: null, failed: true };
+    state.auth = { oauth_configured: false, password_login_enabled: false, authenticated: false, user: null, failed: true };
     notify(`Could not check sign-in state: ${error.message}`, "error");
   }
   renderAccount();
@@ -467,10 +467,15 @@ function renderAccount() {
   if (auth.authenticated && auth.user) {
     const user = auth.user;
     const avatar = /^https:\/\//.test(user.avatar_url || "") ? `<img class="user-avatar" src="${escapeHtml(user.avatar_url)}" alt="" width="30" height="30" referrerpolicy="no-referrer">` : `<span class="user-avatar fallback" aria-hidden="true">${escapeHtml((user.login || "?").slice(0, 2).toUpperCase())}</span>`;
-    area.innerHTML = `${avatar}<span class="user-login" title="${escapeHtml(user.name || user.login)}">${escapeHtml(user.login)}</span><button type="button" class="secondary-button small" id="signOutButton">Sign out</button>`;
+    const badge = user.auth_method === "password" ? `<span class="method-badge" title="Signed in with a demo account">Demo</span>` : "";
+    area.innerHTML = `${avatar}<span class="user-login" title="${escapeHtml(user.name || user.login)}">${escapeHtml(user.login)}</span>${badge}<button type="button" class="secondary-button small" id="signOutButton">Sign out</button>`;
     $("#signOutButton").addEventListener("click", signOut);
-  } else if (auth.oauth_configured) {
-    area.innerHTML = `<a class="secondary-button small" href="/auth/github/login">Sign in with GitHub</a>`;
+  } else if (auth.oauth_configured || auth.password_login_enabled) {
+    const github = auth.oauth_configured ? `<a class="secondary-button small" href="/auth/github/login">Sign in with GitHub</a>` : "";
+    const demo = auth.password_login_enabled ? `<button type="button" class="secondary-button small" id="demoSignInButton">Demo account</button>` : "";
+    area.innerHTML = github + demo;
+    const demoButton = $("#demoSignInButton");
+    if (demoButton) demoButton.addEventListener("click", () => { setMode("live"); setView("overview"); $("#demoUsername").focus(); });
   } else {
     area.innerHTML = `<span class="account-note" title="Set GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET on the server to enable sign-in">Sign-in not configured</span>`;
   }
@@ -505,7 +510,8 @@ function handleAuthRedirect() {
 function liveAccess() {
   const auth = state.auth, status = state.status;
   if (!auth || !status) return { kind: "loading" };
-  if (auth.oauth_configured && !auth.authenticated) return { kind: "needs-signin" };
+  if ((auth.oauth_configured || auth.password_login_enabled) && !auth.authenticated) return { kind: "needs-signin" };
+  if (auth.authenticated && auth.user && auth.user.auth_method === "password") return { kind: "password-user" };
   if (auth.authenticated) return { kind: "signed-in" };
   if (status.github_connected) return { kind: "server" };
   return { kind: "unconfigured" };
@@ -515,19 +521,46 @@ function renderLive() {
   const access = liveAccess();
   const notes = {
     loading: "Checking what this server allows…",
-    "needs-signin": "Sign in with GitHub to review pull requests.",
+    "needs-signin": state.auth && state.auth.oauth_configured ? "Sign in with GitHub or a demo account to review pull requests." : "Sign in with a demo account to review pull requests.",
+    "password-user": "Signed in with a demo account. Enter the pull request below; the review uses the server's GitHub access.",
     "signed-in": "Pick a repository, then a pull request. Reviews use your GitHub access.",
     server: "GitHub sign-in is not configured, so reviews use the server's GitHub credentials. Enter the pull request below.",
     unconfigured: "No GitHub access is configured on this server. Set GITHUB_TOKEN (or GITHUB_APP_ID with a private key) for server-side access, or GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET to let users sign in. You can still submit below to see the server's answer. Demo mode needs none of this.",
   };
   $("#liveNote").textContent = notes[access.kind];
   $("#signInPrompt").classList.toggle("hidden", access.kind !== "needs-signin");
+  $("#githubSignIn").classList.toggle("hidden", !(state.auth && state.auth.oauth_configured));
+  $("#passwordForm").classList.toggle("hidden", !(state.auth && state.auth.password_login_enabled));
   $("#pickerBlock").classList.toggle("hidden", access.kind !== "signed-in");
   const manual = $("#manualBlock");
   manual.classList.toggle("hidden", access.kind === "needs-signin" || access.kind === "loading");
   if (access.kind !== "signed-in" && !manual.dataset.touched) manual.open = true;
   renderPublishControl();
   if (access.kind === "signed-in" && state.mode === "live" && state.repos === null) loadRepos();
+}
+
+async function passwordSignIn() {
+  const username = $("#demoUsername").value.trim(), password = $("#demoPassword").value;
+  const error = $("#passwordError");
+  const fail = (message) => { error.textContent = message; error.classList.remove("hidden"); };
+  error.classList.add("hidden");
+  if (!username || !password) { fail("Enter both the username and the password."); return; }
+  const submit = $("#passwordSubmit");
+  submit.disabled = true;
+  try {
+    await api("/auth/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) });
+    $("#demoPassword").value = "";
+    state.repos = null; state.jobs = null;
+    await loadAuth();
+    notify("Signed in with a demo account.", "success");
+  } catch (failure) {
+    $("#demoPassword").value = "";
+    if (failure.status === 401) fail("That username or password is not right.");
+    else if (failure.status === 429) fail("Too many failed attempts. Wait 10 minutes, then try again.");
+    else fail(failure.message);
+  } finally {
+    submit.disabled = false;
+  }
 }
 
 function renderPublishControl() {
@@ -744,6 +777,9 @@ function bindEvents() {
   $$(".nav-item").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
   $$('[data-view-link]').forEach((button) => button.addEventListener("click", () => setView(button.dataset.viewLink)));
   $$(".mode-switch button").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
+  // A div, not a nested <form>: the sign-in prompt lives inside the review form.
+  $("#passwordSubmit").addEventListener("click", passwordSignIn);
+  $("#passwordForm").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); passwordSignIn(); } });
   $("#reviewForm").addEventListener("submit", (event) => { event.preventDefault(); runReview(); });
   $("#manualBlock").addEventListener("toggle", () => { $("#manualBlock").dataset.touched = "1"; });
   $("#repoSearch").addEventListener("input", renderRepos);
@@ -762,7 +798,7 @@ function bindEvents() {
   $("#refreshButton").addEventListener("click", async () => {
     await Promise.all([loadStatus(), loadAuth()]);
     if (state.mode === "demo") await runReview();
-    else if (state.auth && state.auth.authenticated) { state.repos = null; loadRepos(); if (state.selectedRepo) loadPulls(); }
+    else if (state.auth && state.auth.authenticated && state.auth.user.auth_method !== "password") { state.repos = null; loadRepos(); if (state.selectedRepo) loadPulls(); }
     if ($("#view-history").classList.contains("active")) loadJobs();
   });
   $("#historyForm").addEventListener("submit", (event) => { event.preventDefault(); loadHistory($("#historyRepo").value.trim()); });

@@ -27,6 +27,10 @@ from .settings import Settings
 
 STATIC_DIR = Path(__file__).with_name("static")
 NAME = r"^[A-Za-z0-9_.-]+$"
+REPOS_NEED_GITHUB_DETAIL = (
+    "Sign in with GitHub to browse your repositories; enter owner/repo/number instead"
+)
+login_throttle = auth.LoginThrottle()
 REVIEW_ACTIONS = {"opened", "reopened", "synchronize", "ready_for_review"}
 
 
@@ -77,6 +81,11 @@ class GitHubReviewRequest(BaseModel):
     publish: bool = False
 
 
+class PasswordLoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+
 class DemoReviewRequest(BaseModel):
     case_id: str = Field(default="full-spectrum", pattern=r"^[a-z0-9-]+$")
 
@@ -86,20 +95,30 @@ def current_user(request: Request) -> auth.AuthenticatedUser | None:
     return auth.load_user(store(), settings(), request.cookies.get(auth.SESSION_COOKIE))
 
 
+def _sign_in_prompt(config: Settings) -> str:
+    if config.oauth_configured and config.password_login_enabled:
+        return "Sign in with GitHub or a demo account first"
+    return "Sign in with GitHub first" if config.oauth_configured else "Sign in first"
+
+
 def require_viewer(request: Request) -> auth.AuthenticatedUser | None:
-    """When OAuth is configured, review data is visible to signed-in users only."""
+    """When any sign-in method is configured, review data is visible to signed-in users only."""
     user = current_user(request)
-    if settings().oauth_configured and user is None:
-        raise HTTPException(status_code=401, detail="Sign in with GitHub first")
+    config = settings()
+    if config.login_required and user is None:
+        raise HTTPException(status_code=401, detail=_sign_in_prompt(config))
     return user
 
 
 def require_login(request: Request) -> auth.AuthenticatedUser:
-    if not settings().oauth_configured:
+    """A signed-in user holding a GitHub token (repository browsing needs one)."""
+    if not settings().login_required:
         raise HTTPException(status_code=503, detail="GitHub OAuth is not configured")
     user = current_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Sign in with GitHub first")
+    if user.token is None:
+        raise HTTPException(status_code=403, detail=REPOS_NEED_GITHUB_DETAIL)
     return user
 
 
@@ -157,6 +176,7 @@ def dashboard_status():
         "service": "ready",
         "github_connected": config.server_github_configured,
         "oauth_configured": config.oauth_configured,
+        "password_login_enabled": config.password_login_enabled,
         "llm_connected": bool(config.llm_api_key),
         "llm_model": config.llm_model if config.llm_api_key else None,
         "webhook_configured": bool(config.github_webhook_secret),
@@ -210,6 +230,7 @@ def auth_status(request: Request):
     user = current_user(request)
     return {
         "oauth_configured": settings().oauth_configured,
+        "password_login_enabled": settings().password_login_enabled,
         "authenticated": user is not None,
         "user": user.public() if user else None,
     }
@@ -253,6 +274,36 @@ async def github_callback(
     session_id = auth.create_session(store(), config, profile, token)
     response = RedirectResponse("/?auth=ok", status_code=302)
     response.delete_cookie(auth.STATE_COOKIE, path="/auth/github")
+    response.set_cookie(
+        auth.SESSION_COOKIE,
+        session_id,
+        max_age=int(auth.SESSION_TTL.total_seconds()),
+        httponly=True,
+        samesite="lax",
+        secure=auth.cookie_secure(config),
+    )
+    return response
+
+
+@app.post("/auth/password", dependencies=[Depends(require_same_origin)])
+def password_login(body: PasswordLoginRequest, request: Request):
+    config = settings()
+    if not config.password_login_enabled:
+        raise HTTPException(status_code=503, detail="Demo account sign-in is not configured")
+    client = request.client.host if request.client else "unknown"
+    keys = (f"user:{body.username.casefold()}", f"ip:{client}")
+    if login_throttle.locked(*keys):
+        raise HTTPException(
+            status_code=429, detail="Too many failed sign-in attempts. Try again in 10 minutes."
+        )
+    if not auth.authenticate(config, body.username, body.password):
+        login_throttle.record_failure(*keys)
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    login_throttle.reset(keys[0])
+    session_id = auth.create_session(
+        store(), config, {"login": body.username, "name": "Demo account"}, None
+    )
+    response = JSONResponse({"status": "signed_in", "user": {"login": body.username}})
     response.set_cookie(
         auth.SESSION_COOKIE,
         session_id,
@@ -316,9 +367,9 @@ async def review_github(body: GitHubReviewRequest, request: Request):
     """Queue a review of a real pull request and return its job immediately."""
     config = settings()
     user = current_user(request)
-    if config.oauth_configured and user is None:
-        raise HTTPException(status_code=401, detail="Sign in with GitHub first")
-    if user is None and not config.server_github_configured:
+    if config.login_required and user is None:
+        raise HTTPException(status_code=401, detail=_sign_in_prompt(config))
+    if (user is None or user.token is None) and not config.server_github_configured:
         raise HTTPException(status_code=503, detail="GitHub credentials are not configured")
     if body.publish and not config.publish_reviews:
         raise HTTPException(

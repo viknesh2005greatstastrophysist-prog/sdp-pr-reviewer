@@ -77,8 +77,18 @@
               <div id="liveControls" class="live-controls hidden">
                 <p id="liveNote" class="live-note" role="status"></p>
                 <div id="signInPrompt" class="signin-prompt hidden">
-                  <a class="primary-button" href="/auth/github/login">Sign in with GitHub</a>
-                  <small>Sign-in lets PRISM list your repositories and open pull requests. It uses read access only.</small>
+                  <div id="githubSignIn" class="signin-option hidden">
+                    <a class="primary-button" href="/auth/github/login">Sign in with GitHub</a>
+                    <small>Lets PRISM list your repositories and open pull requests. It uses read access only.</small>
+                  </div>
+                  <div id="passwordForm" class="password-form hidden" role="group" aria-labelledby="passwordFormTitle">
+                    <strong id="passwordFormTitle">Demo account</strong>
+                    <label>Username<input id="demoUsername" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64"></label>
+                    <label>Password<input id="demoPassword" name="password" type="password" autocomplete="current-password" maxlength="256"></label>
+                    <button type="button" class="secondary-button" id="passwordSubmit">Sign in</button>
+                    <p id="passwordError" class="form-error hidden" role="alert"></p>
+                    <small>For reviewers without GitHub. Demo accounts enter owner/repo/number and use the server's GitHub access.</small>
+                  </div>
                 </div>
                 <div id="pickerBlock" class="picker-block hidden">
                   <div class="picker-col">

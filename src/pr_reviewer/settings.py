@@ -4,6 +4,25 @@ import os
 from dataclasses import dataclass
 
 
+def normalise_database_url(url: str) -> str:
+    """Render and Heroku hand out postgres:// URLs; SQLAlchemy needs the psycopg driver name."""
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix) :]
+    return url
+
+
+def parse_demo_accounts(raw: str | None) -> tuple[tuple[str, str], ...]:
+    """Parse "user:hash,user2:hash2". Malformed entries are skipped, never guessed."""
+    accounts: list[tuple[str, str]] = []
+    for entry in (raw or "").split(","):
+        username, separator, hashed = entry.strip().partition(":")
+        username = username.strip()
+        if separator and username and hashed.startswith("pbkdf2_sha256$"):
+            accounts.append((username, hashed))
+    return tuple(accounts)
+
+
 @dataclass(frozen=True)
 class Settings:
     github_token: str | None = None
@@ -28,6 +47,17 @@ class Settings:
     webhook_auto_publish: bool = False
     review_concurrency: int = 2
     min_confidence: float = 0.0
+    # username -> "pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64>" (see pr-reviewer-hash-password)
+    demo_accounts: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def password_login_enabled(self) -> bool:
+        return bool(self.demo_accounts)
+
+    @property
+    def login_required(self) -> bool:
+        """Review data is private whenever any sign-in method is configured."""
+        return self.oauth_configured or self.password_login_enabled
 
     @property
     def oauth_configured(self) -> bool:
@@ -64,10 +94,11 @@ class Settings:
             llm_api_key=text("LLM_API_KEY"),
             llm_model=text("LLM_MODEL") or cls.llm_model,
             llm_base_url=text("LLM_BASE_URL") or cls.llm_base_url,
-            database_url=text("DATABASE_URL") or cls.database_url,
+            database_url=normalise_database_url(text("DATABASE_URL") or cls.database_url),
             agent_timeout=float(text("AGENT_TIMEOUT") or cls.agent_timeout),
             publish_reviews=enabled("PUBLISH_REVIEWS"),
             webhook_auto_publish=enabled("WEBHOOK_AUTO_PUBLISH"),
             review_concurrency=max(1, int(text("REVIEW_CONCURRENCY") or cls.review_concurrency)),
             min_confidence=min(1.0, max(0.0, float(text("MIN_CONFIDENCE") or 0.0))),
+            demo_accounts=parse_demo_accounts(os.getenv("DEMO_ACCOUNTS")),
         )

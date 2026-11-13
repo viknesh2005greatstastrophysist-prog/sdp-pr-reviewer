@@ -98,6 +98,15 @@ a.secondary-button:hover { color: var(--teal); }
 .live-controls { display: block; }
 .live-note { margin: 0 0 12px; color: var(--soft); font-size: 11px; line-height: 1.6; }
 .signin-prompt { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; }
+.signin-option { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; flex: 1 1 100%; }
+.password-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; flex: 1 1 100%; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.password-form > strong { grid-column: 1 / -1; font-size: 12px; }
+.password-form > small, .password-form > .form-error { grid-column: 1 / -1; margin: 0; }
+.password-form label { color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .06em; }
+.password-form input { margin-top: 6px; width: 100%; border: 1px solid var(--line); background: #071219; color: var(--text); padding: 10px 11px; border-radius: 8px; font-size: 11px; }
+.password-form input:focus-visible, .secondary-button:focus-visible, .primary-button:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.form-error { color: #ff9b8f; font-size: 11px; }
+.method-badge { font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--teal); border: 1px solid var(--line-strong); border-radius: 20px; padding: 3px 7px; }
 .signin-prompt small { color: var(--muted); font-size: 10px; flex: 1 1 220px; }
 .picker-block { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.3fr); gap: 14px; margin-bottom: 12px; }
 .picker-col { min-width: 0; }
@@ -189,4 +198,6 @@ td, th { white-space: nowrap; }
   .history-form { flex-direction: column; align-items: stretch; }
   .page-intro.row .filter-group { width: 100%; }
   .signin-prompt .primary-button { width: 100%; }
+  .password-form { grid-template-columns: 1fr; }
+  .password-form .secondary-button { width: 100%; }
 }
