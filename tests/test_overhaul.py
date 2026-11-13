@@ -514,3 +514,27 @@ def test_quota_detection_survives_list_shaped_error_bodies():
     billing = httpx.Response(429, json=[{"error": {"code": "insufficient_quota"}}])
     assert _quota_exhausted(billing) is True
     assert _quota_exhausted(httpx.Response(429, text="not json")) is False
+
+
+def test_redo_failed_drops_only_failed_records_and_dead_streak_stops_the_run(tmp_path):
+    from pr_reviewer.evaluation import QuotaExhausted, drop_failed_records, evaluate
+
+    good = CaseRecord(
+        agent_runs=[AgentRun(agent="a", status="success", duration_ms=1, finding_count=0)]
+    )
+    bad = CaseRecord(
+        agent_runs=[AgentRun(agent="a", status="failed", duration_ms=1, finding_count=0)]
+    )
+    unverified = CaseRecord(verify_error="boom")
+    store = {"s": {"1": good, "2": bad, "3": unverified}}
+    assert drop_failed_records(store) == 2 and list(store["s"]) == ["1"]
+
+    class Dead:
+        async def __call__(self, case):
+            return make_result([], {"a": "failed", "b": "failed"})
+
+    cases = [EvaluationCase(case_id=str(i), diff="") for i in range(5)]
+    checkpoint = tmp_path / "ck.json"
+    with pytest.raises(QuotaExhausted):
+        asyncio.run(evaluate(cases, {"dead": Dead()}, checkpoint=checkpoint))
+    assert len(json.loads(checkpoint.read_text())["dead"]) == 2  # stopped after two dead cases

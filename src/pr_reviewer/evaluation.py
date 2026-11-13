@@ -286,10 +286,11 @@ def metrics_from_records(
     records: dict[str, CaseRecord],
     *,
     subset: str = "actionable",
-    transform: Callable[[list[Finding]], list[Finding]] | None = None,
+    transform: Callable[[CaseRecord], list[Finding]] | None = None,
 ) -> tuple[StrategyMetrics, list[Finding]]:
-    """Score saved predictions. `transform` (e.g. the focused review mode) is applied per case
-    before matching. Also returns the false positives (category policy) for adjudication."""
+    """Score saved predictions. `transform` (e.g. the focused review mode) receives each saved
+    record and returns the findings to match. Also returns the false positives (category
+    policy) for adjudication."""
     tp = fp = fn = 0
     loc = [0, 0, 0]
     hunk = [0, 0, 0]
@@ -300,7 +301,7 @@ def metrics_from_records(
     runs = failures = failed_cases = initial = retried = 0
     for case in cases:
         record = records[case.case_id]
-        findings = transform(record.findings) if transform else record.findings
+        findings = transform(record) if transform else record.findings
         expected = ground_truth(case, subset)
         elapsed += record.latency_ms / 1000
         case_failures = sum(run.status != "success" for run in record.agent_runs)
@@ -365,6 +366,24 @@ def _save_checkpoint(path: Path, predictions: dict[str, dict[str, CaseRecord]]) 
     temporary.replace(path)
 
 
+class QuotaExhausted(RuntimeError):
+    """Raised when consecutive cases fail on every agent: stop instead of burning quota."""
+
+
+def drop_failed_records(predictions: dict[str, dict[str, CaseRecord]]) -> int:
+    """Forget records whose agents or verification failed so a resume re-runs exactly those."""
+    dropped = 0
+    for records in predictions.values():
+        for case_id in [
+            cid
+            for cid, rec in records.items()
+            if any(run.status != "success" for run in rec.agent_runs) or rec.verify_error
+        ]:
+            del records[case_id]
+            dropped += 1
+    return dropped
+
+
 def _load_checkpoint(path: Path) -> dict[str, dict[str, CaseRecord]]:
     if not path.exists():
         return {}
@@ -413,12 +432,17 @@ async def evaluate(
     checkpoint: Path | None = None,
     verifier: OpenAICompatibleClient | None = None,
     verify_passes: int = 3,
+    redo_failed: bool = False,
+    stop_after_dead_cases: int = 2,
 ) -> EvaluationReport:
     predictions = _load_checkpoint(checkpoint) if checkpoint else {}
+    if redo_failed:
+        drop_failed_records(predictions)
     for name, strategy in strategies.items():
         records = predictions.setdefault(name, {})
         first = True
         wants_verify = verifier is not None and hasattr(strategy, "rerun")
+        dead_streak = 0
         for case in cases:
             done = records.get(case.case_id)
             if done is not None and (done.verified or not wants_verify):
@@ -436,6 +460,16 @@ async def evaluate(
                 )
             if checkpoint:
                 _save_checkpoint(checkpoint, predictions)
+            everything_failed = bool(done.agent_runs) and all(
+                run.status != "success" for run in done.agent_runs
+            )
+            dead_streak = dead_streak + 1 if everything_failed else 0
+            if dead_streak >= stop_after_dead_cases:
+                raise QuotaExhausted(
+                    f"{name}: every agent failed on {dead_streak} consecutive cases "
+                    f"(last: {case.case_id}); stopping to protect quota. Checkpoint saved; "
+                    "resume with --redo-failed."
+                )
     reports: list[StrategyMetrics] = []
     adjudication: dict[str, list[Finding]] = {}
     for name in strategies:
@@ -627,6 +661,11 @@ def main() -> None:
     parser.add_argument(
         "--no-verify", action="store_true", help="skip the verification pass (one call per case)"
     )
+    parser.add_argument(
+        "--redo-failed",
+        action="store_true",
+        help="drop checkpointed cases with failed agents/verification and run them again",
+    )
     parser.add_argument("--checkpoint", type=Path, help="resume file; finished cases are kept")
     parser.add_argument(
         "--subset", choices=("actionable", "addressed", "all"), default="actionable"
@@ -671,6 +710,7 @@ def main() -> None:
             subset=args.subset,
             checkpoint=args.checkpoint,
             verifier=verifier,
+            redo_failed=args.redo_failed,
             run_config={
                 "case_delay_s": args.case_delay,
                 "sequential_agents": args.sequential_agents,
