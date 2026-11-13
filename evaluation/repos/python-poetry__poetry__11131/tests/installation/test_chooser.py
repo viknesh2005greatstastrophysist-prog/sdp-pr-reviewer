@@ -1,0 +1,562 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import pytest
+
+from packaging.tags import Tag
+from poetry.core.packages.package import Package
+from poetry.core.packages.utils.link import Link
+
+from poetry.console.exceptions import PoetryRuntimeError
+from poetry.installation.chooser import Chooser
+from poetry.repositories.legacy_repository import LegacyRepository
+from poetry.utils.env import MockEnv
+
+
+if TYPE_CHECKING:
+    from poetry.core.packages.package import PackageFile
+    from pytest_mock import MockerFixture
+
+    from poetry.repositories.repository_pool import RepositoryPool
+    from tests.conftest import Config
+    from tests.types import DistributionHashGetter
+    from tests.types import SpecializedLegacyRepositoryMocker
+
+JSON_FIXTURES = (
+    Path(__file__).parent.parent / "repositories" / "fixtures" / "pypi.org" / "json"
+)
+
+LEGACY_FIXTURES = Path(__file__).parent.parent / "repositories" / "fixtures" / "legacy"
+
+
+def check_chosen_link_filename(
+    env: MockEnv,
+    source_type: str,
+    pool: RepositoryPool,
+    filename: str | None,
+    config: Config | None = None,
+    package_name: str = "pytest",
+    package_version: str = "3.5.0",
+) -> None:
+    chooser = Chooser(pool, env, config)
+    package = Package(package_name, package_version)
+
+    if source_type == "legacy":
+        package = Package(
+            package.name,
+            package.version.text,
+            source_type="legacy",
+            source_reference="foo",
+            source_url="https://legacy.foo.bar/simple/",
+        )
+
+    try:
+        link = chooser.choose_for(package)
+    except PoetryRuntimeError as e:
+        if filename is None:
+            assert (
+                str(e)
+                == f"Unable to find installation candidates for {package.name} ({package.version})"
+            )
+        else:
+            pytest.fail("Package was not found")
+    else:
+        assert link.filename == filename
+
+
+@pytest.mark.parametrize("source_type", ["", "legacy"])
+def test_chooser_chooses_universal_wheel_link_if_available(
+    env: MockEnv,
+    source_type: str,
+    pool: RepositoryPool,
+) -> None:
+    check_chosen_link_filename(
+        env, source_type, pool, "pytest-3.5.0-py2.py3-none-any.whl"
+    )
+
+
+@pytest.mark.parametrize(
+    ("policy", "filename"),
+    [
+        (":all:", "pytest-3.5.0.tar.gz"),
+        (":none:", "pytest-3.5.0-py2.py3-none-any.whl"),
+        ("black", "pytest-3.5.0-py2.py3-none-any.whl"),
+        ("pytest", "pytest-3.5.0.tar.gz"),
+        ("pytest,black", "pytest-3.5.0.tar.gz"),
+    ],
+)
+@pytest.mark.parametrize("source_type", ["", "legacy"])
+def test_chooser_no_binary_policy(
+    env: MockEnv,
+    source_type: str,
+    pool: RepositoryPool,
+    policy: str,
+    filename: str,
+    config: Config,
+) -> None:
+    config.merge({"installer": {"no-binary": policy.split(",")}})
+    check_chosen_link_filename(env, source_type, pool, filename, config)
+
+
+@pytest.mark.parametrize(
+    ("policy", "filename"),
+    [
+        (":all:", "pytest-3.5.0-py2.py3-none-any.whl"),
+        (":none:", "pytest-3.5.0-py2.py3-none-any.whl"),
+        ("black", "pytest-3.5.0-py2.py3-none-any.whl"),
+        ("pytest", "pytest-3.5.0-py2.py3-none-any.whl"),
+        ("pytest,black", "pytest-3.5.0-py2.py3-none-any.whl"),
+    ],
+)
+@pytest.mark.parametrize("source_type", ["", "legacy"])
+def test_chooser_only_binary_policy(
+    env: MockEnv,
+    source_type: str,
+    pool: RepositoryPool,
+    policy: str,
+    filename: str,
+    config: Config,
+) -> None:
+    config.merge({"installer": {"only-binary": policy.split(",")}})
+    check_chosen_link_filename(env, source_type, pool, filename, config)
+
+
+@pytest.mark.parametrize(
+    ("no_binary", "only_binary", "filename"),
+    [
+        # no `no_binary` nor `only_binary`
+        (":none:", ":none:", "pytest-3.5.0-py2.py3-none-any.whl"),
+        ("black", "black", "pytest-3.5.0-py2.py3-none-any.whl"),
+        # `no_binary` only
+        (":all:", ":none:", "pytest-3.5.0.tar.gz"),
+        ("pytest", "black", "pytest-3.5.0.tar.gz"),
+        # `only_binary` only
+        (":none:", ":all:", "pytest-3.5.0-py2.py3-none-any.whl"),
+        ("black", "pytest", "pytest-3.5.0-py2.py3-none-any.whl"),
+        # both `no_binary` and `only_binary`
+        ("pytest", "pytest", None),
+        (":all:", ":all:", None),
+        ("pytest", ":all:", "pytest-3.5.0.tar.gz"),
+        (":all:", "pytest", "pytest-3.5.0-py2.py3-none-any.whl"),
+        # complex cases
+        ("pytest,black", "pytest,black", None),
+    ],
+)
+@pytest.mark.parametrize("source_type", ["", "legacy"])
+def test_chooser_multiple_binary_policy(
+    env: MockEnv,
+    source_type: str,
+    pool: RepositoryPool,
+    no_binary: str,
+    only_binary: str,
+    filename: str | None,
+    config: Config,
+) -> None:
+    config.merge(
+        {
+            "installer": {
+                "no-binary": no_binary.split(","),
+                "only-binary": only_binary.split(","),
+            }
+        }
+    )
+    check_chosen_link_filename(env, source_type, pool, filename, config)
+
+
+@pytest.mark.parametrize("source_type", ["", "legacy"])
+def test_chooser_chooses_specific_python_universal_wheel_link_if_available(
+    env: MockEnv,
+    source_type: str,
+    pool: RepositoryPool,
+) -> None:
+    check_chosen_link_filename(
+        env, source_type, pool, "isort-4.3.4-py3-none-any.whl", None, "isort", "4.3.4"
+    )
+
+
+@pytest.mark.parametrize("source_type", ["", "legacy"])
+def test_chooser_chooses_system_specific_wheel_link_if_available(
+    source_type: str, pool: RepositoryPool
+) -> None:
+    env = MockEnv(
+        supported_tags=[Tag("cp37", "cp37m", "win32"), Tag("py3", "none", "any")]
+    )
+    check_chosen_link_filename(
+        env,
+        source_type,
+        pool,
+        "PyYAML-3.13-cp37-cp37m-win32.whl",
+        None,
+        "pyyaml",
+        "3.13.0",
+    )
+
+
+@pytest.mark.parametrize("source_type", ["", "legacy"])
+def test_chooser_chooses_sdist_if_no_compatible_wheel_link_is_available(
+    env: MockEnv,
+    source_type: str,
+    pool: RepositoryPool,
+) -> None:
+    check_chosen_link_filename(
+        env, source_type, pool, "PyYAML-3.13.tar.gz", None, "pyyaml", "3.13.0"
+    )
+
+
+@pytest.mark.parametrize("source_type", ["", "legacy"])
+def test_chooser_chooses_distributions_that_match_the_package_hashes(
+    env: MockEnv,
+    source_type: str,
+    pool: RepositoryPool,
+    dist_hash_getter: DistributionHashGetter,
+) -> None:
+    chooser = Chooser(pool, env)
+
+    package = Package("isort", "4.3.4")
+    files: list[PackageFile] = [
+        {
+            "file": filename,
+            "hash": f"sha256:{dist_hash_getter(filename).sha256}",
+        }
+        for filename in [
+            f"{package.name}-{package.version}.tar.gz",
+        ]
+    ]
+    if source_type == "legacy":
+        package = Package(
+            package.name,
+            package.version.text,
+            source_type="legacy",
+            source_reference="foo",
+            source_url="https://legacy.foo.bar/simple/",
+        )
+
+    package.files = files
+
+    link = chooser.choose_for(package)
+
+    assert link.filename == "isort-4.3.4.tar.gz"
+
+
+@pytest.mark.parametrize("source_type", ["", "legacy"])
+def test_chooser_chooses_yanked_if_no_others(
+    env: MockEnv,
+    source_type: str,
+    pool: RepositoryPool,
+    dist_hash_getter: DistributionHashGetter,
+) -> None:
+    chooser = Chooser(pool, env)
+
+    package = Package("black", "21.11b0")
+    files: list[PackageFile] = [
+        {
+            "file": filename,
+            "hash": (f"sha256:{dist_hash_getter(filename).sha256}"),
+        }
+        for filename in [f"{package.name}-{package.version}-py3-none-any.whl"]
+    ]
+    if source_type == "legacy":
+        package = Package(
+            package.name,
+            package.version.text,
+            source_type="legacy",
+            source_reference="foo",
+            source_url="https://legacy.foo.bar/simple/",
+        )
+
+    package.files = files
+
+    link = chooser.choose_for(package)
+
+    assert link.filename == "black-21.11b0-py3-none-any.whl"
+    assert link.yanked
+
+
+def test_chooser_does_not_choose_yanked_if_others(
+    specialized_legacy_repository_mocker: SpecializedLegacyRepositoryMocker,
+    pool: RepositoryPool,
+    dist_hash_getter: DistributionHashGetter,
+) -> None:
+    chooser = Chooser(pool, MockEnv(supported_tags=[Tag("py2", "none", "any")]))
+
+    repo = pool.repository("foo2")
+    pool.remove_repository("foo2")
+
+    assert isinstance(repo, LegacyRepository)
+    pool.add_repository(
+        specialized_legacy_repository_mocker("-partial-yank", repo.name, repo.url)
+    )
+
+    package = Package("futures", "3.2.0")
+    files: list[PackageFile] = [
+        {
+            "file": filename,
+            "hash": f"sha256:{dist_hash_getter(filename).sha256}",
+        }
+        for filename in [
+            f"{package.name}-{package.version}-py2-none-any.whl",
+            f"{package.name}-{package.version}.tar.gz",
+        ]
+    ]
+    package = Package(
+        package.name,
+        package.version.text,
+        source_type="legacy",
+        source_reference="foo",
+        source_url="https://legacy.foo.bar/simple/",
+    )
+    package_partial_yank = Package(
+        package.name,
+        package.version.text,
+        source_type="legacy",
+        source_reference="foo2",
+        source_url="https://legacy.foo2.bar/simple/",
+    )
+
+    package.files = files
+    package_partial_yank.files = files
+
+    link = chooser.choose_for(package)
+    link_partial_yank = chooser.choose_for(package_partial_yank)
+
+    assert link.filename == "futures-3.2.0-py2-none-any.whl"
+    assert link_partial_yank.filename == "futures-3.2.0.tar.gz"
+
+
+LOCKED_SHA = "sha256:" + "1" * 64
+OTHER_SHA = "sha256:" + "2" * 64
+
+
+def _hashless_package_and_pool(
+    pool: RepositoryPool, mocker: MockerFixture, computed: str
+) -> Package:
+    """Point the pool at a single link that advertises no hash at all, and make
+    the repository compute `computed` for it.
+    """
+    package = Package(
+        "isort",
+        "4.3.4",
+        source_type="legacy",
+        source_reference="foo",
+        source_url="https://legacy.foo.bar/simple/",
+    )
+    package.files = [{"file": "isort-4.3.4.tar.gz", "hash": LOCKED_SHA}]
+
+    hashless = Link("https://legacy.foo.bar/isort-4.3.4.tar.gz")
+    assert not hashless.hashes
+
+    mocker.patch.object(
+        LegacyRepository, "find_links_for_package", return_value=[hashless]
+    )
+    mocker.patch.object(LegacyRepository, "calculate_sha256", return_value=computed)
+    return package
+
+
+def test_chooser_rejects_a_hashless_link_whose_computed_hash_does_not_match(
+    env: MockEnv, pool: RepositoryPool, mocker: MockerFixture
+) -> None:
+    """An index that omits the hash fragment must not bypass the locked hashes."""
+    package = _hashless_package_and_pool(pool, mocker, OTHER_SHA)
+
+    with pytest.raises(PoetryRuntimeError) as e:
+        Chooser(pool, env).choose_for(package)
+
+    assert "did not match any known checksums" in str(e.value)
+
+
+def test_chooser_accepts_a_hashless_link_whose_computed_hash_matches(
+    env: MockEnv, pool: RepositoryPool, mocker: MockerFixture
+) -> None:
+    """Computing the hash is the point, so a hashless link that hashes to the
+    locked value is still installable.
+    """
+    package = _hashless_package_and_pool(pool, mocker, LOCKED_SHA)
+
+    link = Chooser(pool, env).choose_for(package)
+
+    assert link.filename == "isort-4.3.4.tar.gz"
+
+
+def test_chooser_accepts_any_matching_hash_when_lock_mixes_algorithms(
+    env: MockEnv, pool: RepositoryPool, mocker: MockerFixture
+) -> None:
+    """A PEP 691 index may list several hashes per file. If the lock entry for
+    the package mixes algorithms (one file sha256, another sha512), a file is
+    still valid when any of its advertised hashes is already in the lock.
+    """
+    sha256_wheel = "sha256:" + "a" * 64
+    sha512_sdist = "sha512:" + "b" * 128
+    other_sha512 = "c" * 128
+
+    package = Package(
+        "markupsafe",
+        "3.0.1",
+        source_type="legacy",
+        source_reference="foo",
+        source_url="https://legacy.foo.bar/simple/",
+    )
+    package.files = [
+        {"file": "MarkupSafe-3.0.1-py3-none-any.whl", "hash": sha256_wheel},
+        {"file": "markupsafe-3.0.1.tar.gz", "hash": sha512_sdist},
+    ]
+
+    wheel = Link(
+        "https://legacy.foo.bar/MarkupSafe-3.0.1-py3-none-any.whl",
+        hashes={"sha256": "a" * 64, "sha512": other_sha512},
+    )
+    sdist = Link(
+        "https://legacy.foo.bar/markupsafe-3.0.1.tar.gz",
+        hashes={"sha512": "b" * 128},
+    )
+
+    mocker.patch.object(
+        LegacyRepository, "find_links_for_package", return_value=[wheel, sdist]
+    )
+    calculate_sha256 = mocker.patch.object(LegacyRepository, "calculate_sha256")
+
+    link = Chooser(pool, env).choose_for(package)
+
+    assert link.filename == "MarkupSafe-3.0.1-py3-none-any.whl"
+    calculate_sha256.assert_not_called()
+
+
+def test_chooser_rejects_when_no_advertised_hash_matches_mixed_lock(
+    env: MockEnv, pool: RepositoryPool, mocker: MockerFixture
+) -> None:
+    """Mixed lock algorithms must not accept a file whose advertised hashes
+    are all unknown, even when a higher-priority algorithm is present.
+    """
+    package = Package(
+        "markupsafe",
+        "3.0.1",
+        source_type="legacy",
+        source_reference="foo",
+        source_url="https://legacy.foo.bar/simple/",
+    )
+    package.files = [
+        {"file": "MarkupSafe-3.0.1-py3-none-any.whl", "hash": "sha256:" + "a" * 64},
+        {"file": "markupsafe-3.0.1.tar.gz", "hash": "sha512:" + "b" * 128},
+    ]
+
+    wheel = Link(
+        "https://legacy.foo.bar/MarkupSafe-3.0.1-py3-none-any.whl",
+        hashes={"sha256": "d" * 64, "sha512": "e" * 128},
+    )
+
+    mocker.patch.object(
+        LegacyRepository, "find_links_for_package", return_value=[wheel]
+    )
+
+    with pytest.raises(PoetryRuntimeError) as e:
+        Chooser(pool, env).choose_for(package)
+
+    assert "did not match any known checksums" in str(e.value)
+    # Highest-priority advertised hash is what the skip path reports.
+    assert "sha512:" + "e" * 128 in e.value.get_text(debug=True, strip=True)
+
+
+def test_chooser_stops_checking_hashes_once_a_candidate_matches(
+    env: MockEnv, pool: RepositoryPool, mocker: MockerFixture
+) -> None:
+    """Candidates are checked best-first and verification stops at the first
+    match, so a worse candidate must never be downloaded/hashed once a better
+    one has already matched.
+    """
+    package = Package(
+        "isort",
+        "4.3.4",
+        source_type="legacy",
+        source_reference="foo",
+        source_url="https://legacy.foo.bar/simple/",
+    )
+    sha1 = "sha256:" + "1" * 64
+    sha2 = "sha256:" + "2" * 64
+    package.files = [
+        {"file": "isort-4.3.4.tar.gz", "hash": sha1},
+        {"file": "isort-4.3.4-py3-none-any.whl", "hash": sha2},
+    ]
+
+    # A compatible wheel outranks an sdist, so it must be tried first.
+    best_wheel = Link("https://legacy.foo.bar/isort-4.3.4-py3-none-any.whl")
+    worse_sdist = Link("https://legacy.foo.bar/isort-4.3.4.tar.gz")
+    assert not best_wheel.hashes
+    assert not worse_sdist.hashes
+
+    mocker.patch.object(
+        LegacyRepository,
+        "find_links_for_package",
+        return_value=[worse_sdist, best_wheel],
+    )
+    calculate_sha256 = mocker.patch.object(
+        LegacyRepository, "calculate_sha256", return_value=sha2
+    )
+
+    link = Chooser(pool, env).choose_for(package)
+
+    assert link.filename == "isort-4.3.4-py3-none-any.whl"
+    # the worse sdist candidate must never be checked once the wheel matched
+    calculate_sha256.assert_called_once()
+    assert calculate_sha256.call_args.args[0] is best_wheel
+
+
+@pytest.mark.parametrize("source_type", ["", "legacy"])
+def test_chooser_throws_an_error_if_package_hashes_do_not_match(
+    env: MockEnv,
+    source_type: None,
+    pool: RepositoryPool,
+) -> None:
+    chooser = Chooser(pool, env)
+
+    package = Package("isort", "4.3.4")
+    files: list[PackageFile] = [
+        {
+            "hash": (
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            ),
+            "file": "isort-4.3.4.tar.gz",
+        }
+    ]
+    if source_type == "legacy":
+        package = Package(
+            package.name,
+            package.version.text,
+            source_type="legacy",
+            source_reference="foo",
+            source_url="https://legacy.foo.bar/simple/",
+        )
+
+    package.files = files
+
+    with pytest.raises(PoetryRuntimeError) as e:
+        chooser.choose_for(package)
+
+    reason = f"Downloaded distributions for {package.name} ({package.version}) did not match any known checksums in your lock file."
+    assert str(e.value) == reason
+
+    text = e.value.get_text(debug=True, strip=True)
+    assert reason in text
+    assert files[0]["hash"] in text
+
+
+def test_chooser_md5_remote_fallback_to_sha256_inline_calculation(
+    env: MockEnv, pool: RepositoryPool, dist_hash_getter: DistributionHashGetter
+) -> None:
+    chooser = Chooser(pool, env)
+    package = Package(
+        "demo",
+        "0.1.0",
+        source_type="legacy",
+        source_reference="foo",
+        source_url="https://legacy.foo.bar/simple/",
+    )
+    package.files = [
+        {
+            "file": filename,
+            "hash": (f"sha256:{dist_hash_getter(filename).sha256}"),
+        }
+        for filename in [f"{package.name}-{package.version}.tar.gz"]
+    ]
+    res = chooser.choose_for(package)
+    assert res.filename == "demo-0.1.0.tar.gz"

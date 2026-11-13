@@ -31,6 +31,7 @@ postgres = ["psycopg[binary]>=3.2,<4"]
 [project.scripts]
 pr-reviewer = "pr_reviewer.cli:main"
 pr-reviewer-evaluate = "pr_reviewer.evaluation:main"
+pr-reviewer-build-corpus = "pr_reviewer.corpus:main"
 
 [build-system]
 requires = ["setuptools>=69"]

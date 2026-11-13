@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import platform
+import shutil
+import subprocess
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +25,16 @@ class EvaluationCase(BaseModel):
     diff: str
     human_findings: list[Finding] = Field(default_factory=list)
     repo_path: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PolicyMetrics(BaseModel):
+    true_positives: int
+    false_positives: int
+    false_negatives: int
+    precision: float
+    recall: float
+    f1: float
 
 
 class StrategyMetrics(BaseModel):
@@ -35,13 +50,19 @@ class StrategyMetrics(BaseModel):
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     estimated_cost_usd: float | None = None
+    # The flat counts above use the "category" policy; the same run under the other policy:
+    location_only: PolicyMetrics | None = None
+    per_category: dict[str, PolicyMetrics] = Field(default_factory=dict)
 
 
 class EvaluationReport(BaseModel):
     corpus_cases: int
     generated_at_epoch: int
     matching_policy: str
+    matching_policies: dict[str, str] = Field(default_factory=dict)
     strategies: list[StrategyMetrics]
+    strategies_not_run: dict[str, str] = Field(default_factory=dict)
+    environment: dict[str, Any] = Field(default_factory=dict)
     false_positive_adjudication: dict[str, list[Finding]]
 
 
@@ -59,52 +80,101 @@ def load_jsonl(path: str | Path) -> list[EvaluationCase]:
     return cases
 
 
+def location_matches(predicted: Finding, expected: Finding) -> bool:
+    return predicted.path == expected.path and abs(predicted.line - expected.line) <= 2
+
+
 def matches(predicted: Finding, expected: Finding) -> bool:
-    return (
-        predicted.path == expected.path
-        and abs(predicted.line - expected.line) <= 2
-        and predicted.category == expected.category
-    )
+    return location_matches(predicted, expected) and predicted.category == expected.category
 
 
-def score(predicted: list[Finding], expected: list[Finding]) -> tuple[int, int, int, list[Finding]]:
+POLICIES: dict[str, Callable[[Finding, Finding], bool]] = {
+    "category": matches,
+    "location-only": location_matches,
+}
+POLICY_DESCRIPTIONS = {
+    "category": "same path and category, within two lines; greedy one-to-one matching",
+    "location-only": "same path, within two lines, any category; greedy one-to-one matching",
+}
+
+
+def match_detail(
+    predicted: list[Finding],
+    expected: list[Finding],
+    policy: Callable[[Finding, Finding], bool] = matches,
+) -> tuple[list[Finding], list[Finding], list[Finding]]:
+    """Return (matched expected findings, false positives, missed expected findings)."""
     unmatched = set(range(len(expected)))
     false_positives: list[Finding] = []
-    true_positives = 0
+    matched: list[Finding] = []
     for finding in predicted:
-        match = next((index for index in unmatched if matches(finding, expected[index])), None)
+        match = next(
+            (index for index in sorted(unmatched) if policy(finding, expected[index])), None
+        )
         if match is None:
             false_positives.append(finding)
         else:
             unmatched.remove(match)
-            true_positives += 1
-    return true_positives, len(false_positives), len(unmatched), false_positives
+            matched.append(expected[match])
+    return matched, false_positives, [expected[index] for index in sorted(unmatched)]
+
+
+def score(predicted: list[Finding], expected: list[Finding]) -> tuple[int, int, int, list[Finding]]:
+    matched, false_positives, missed = match_detail(predicted, expected)
+    return len(matched), len(false_positives), len(missed), false_positives
+
+
+def prf(tp: int, fp: int, fn: int) -> PolicyMetrics:
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return PolicyMetrics(
+        true_positives=tp,
+        false_positives=fp,
+        false_negatives=fn,
+        precision=precision,
+        recall=recall,
+        f1=f1,
+    )
 
 
 Strategy = Callable[[EvaluationCase], Awaitable[ReviewResult]]
 
 
 async def evaluate(
-    cases: list[EvaluationCase], strategies: dict[str, Strategy]
+    cases: list[EvaluationCase],
+    strategies: dict[str, Strategy],
+    *,
+    not_run: dict[str, str] | None = None,
+    environment: dict[str, Any] | None = None,
 ) -> EvaluationReport:
     reports: list[StrategyMetrics] = []
     adjudication: dict[str, list[Finding]] = {}
     for name, strategy in strategies.items():
         tp = fp = fn = 0
+        loc = [0, 0, 0]
+        by_category: dict[str, list[int]] = {}
         elapsed = 0.0
         strategy_false_positives: list[Finding] = []
         for case in cases:
             started = time.perf_counter()
             result = await strategy(case)
             elapsed += time.perf_counter() - started
-            case_tp, case_fp, case_fn, case_false = score(result.findings, case.human_findings)
-            tp += case_tp
-            fp += case_fp
-            fn += case_fn
-            strategy_false_positives.extend(case_false)
-        precision = tp / (tp + fp) if tp + fp else 0.0
-        recall = tp / (tp + fn) if tp + fn else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+            matched, false_pos, missed = match_detail(result.findings, case.human_findings)
+            tp += len(matched)
+            fp += len(false_pos)
+            fn += len(missed)
+            strategy_false_positives.extend(false_pos)
+            for group, index in ((matched, 0), (false_pos, 1), (missed, 2)):
+                for item in group:
+                    by_category.setdefault(item.category, [0, 0, 0])[index] += 1
+            l_matched, l_false, l_missed = match_detail(
+                result.findings, case.human_findings, location_matches
+            )
+            loc[0] += len(l_matched)
+            loc[1] += len(l_false)
+            loc[2] += len(l_missed)
+        overall = prf(tp, fp, fn)
         reports.append(
             StrategyMetrics(
                 strategy=name,
@@ -112,20 +182,71 @@ async def evaluate(
                 true_positives=tp,
                 false_positives=fp,
                 false_negatives=fn,
-                precision=precision,
-                recall=recall,
-                f1=f1,
+                precision=overall.precision,
+                recall=overall.recall,
+                f1=overall.f1,
                 mean_latency_ms=elapsed * 1000 / len(cases),
+                location_only=prf(*loc),
+                per_category={key: prf(*by_category[key]) for key in sorted(by_category)},
             )
         )
         adjudication[name] = strategy_false_positives
     return EvaluationReport(
         corpus_cases=len(cases),
         generated_at_epoch=int(time.time()),
-        matching_policy="same path and category, within two lines; greedy one-to-one matching",
+        matching_policy=POLICY_DESCRIPTIONS["category"],
+        matching_policies=POLICY_DESCRIPTIONS,
         strategies=reports,
+        strategies_not_run=not_run or {},
+        environment=environment or {},
         false_positive_adjudication=adjudication,
     )
+
+
+def _tool_version(name: str) -> str | None:
+    if shutil.which(name) is None:
+        return None
+    try:
+        process = subprocess.run(  # noqa: S603
+            [name, "--version"], capture_output=True, text=True, timeout=60, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return (process.stdout.strip() or process.stderr.strip()) or None
+
+
+def _git_commit() -> str | None:
+    git = shutil.which("git")
+    if git is None:
+        return None
+    try:
+        process = subprocess.run(  # noqa: S603
+            [git, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            cwd=Path(__file__).resolve().parent,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return process.stdout.strip() or None if process.returncode == 0 else None
+
+
+def collect_environment(config: Settings, corpus: Path) -> dict[str, Any]:
+    ruff = _tool_version("ruff")
+    semgrep = _tool_version("semgrep")
+    return {
+        "model_id": config.llm_model if config.llm_api_key else None,
+        "ruff_version": ruff,
+        "semgrep_available": semgrep is not None,
+        "semgrep_version": semgrep,
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "corpus_path": str(corpus),
+        "corpus_sha256": hashlib.sha256(corpus.read_bytes()).hexdigest(),
+        "git_commit": _git_commit(),
+    }
 
 
 def build_strategies(config: Settings) -> dict[str, Strategy]:
@@ -171,7 +292,22 @@ def main() -> None:
     parser.add_argument("corpus", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    report = asyncio.run(evaluate(load_jsonl(args.corpus), build_strategies(Settings.from_env())))
+    config = Settings.from_env()
+    strategies = build_strategies(config)
+    not_run = {
+        name: "LLM_API_KEY not set; agent strategy was not run"
+        for name in ("single-agent", "hybrid-multi-agent")
+        if name not in strategies
+    }
+    report = asyncio.run(
+        evaluate(
+            load_jsonl(args.corpus),
+            strategies,
+            not_run=not_run,
+            environment=collect_environment(config, args.corpus),
+        )
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     print(f"Wrote evaluation for {report.corpus_cases} case(s) to {args.output}")
 

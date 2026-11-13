@@ -1,0 +1,36 @@
+from typing import Optional
+
+from fastapi.openapi.models import OpenIdConnect as OpenIdConnectModel
+from fastapi.security.base import SecurityBase
+from fastapi.security.utils import handle_exc_for_ws
+from starlette.exceptions import HTTPException
+from starlette.requests import HTTPConnection
+from starlette.status import HTTP_403_FORBIDDEN
+
+
+class OpenIdConnect(SecurityBase):
+    def __init__(
+        self,
+        *,
+        openIdConnectUrl: str,
+        scheme_name: Optional[str] = None,
+        description: Optional[str] = None,
+        auto_error: bool = True,
+    ):
+        self.model = OpenIdConnectModel(
+            openIdConnectUrl=openIdConnectUrl, description=description
+        )
+        self.scheme_name = scheme_name or self.__class__.__name__
+        self.auto_error = auto_error
+
+    @handle_exc_for_ws
+    async def __call__(self, request: HTTPConnection) -> Optional[str]:
+        authorization = request.headers.get("Authorization")
+        if not authorization:
+            if self.auto_error:
+                raise HTTPException(
+                    status_code=HTTP_403_FORBIDDEN, detail="Not authenticated"
+                )
+            else:
+                return None
+        return authorization
