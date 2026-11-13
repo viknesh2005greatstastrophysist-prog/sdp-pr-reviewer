@@ -39,9 +39,12 @@ def aggregate(findings: list[Finding]) -> list[Finding]:
         duplicate.confidence = max(duplicate.confidence, finding.confidence)
         if duplicate.suggestion is None:
             duplicate.suggestion = finding.suggestion
-    return sorted(
-        unique, key=lambda item: (-RANK[item.severity], item.path, item.line, item.category)
-    )
+    return sorted(unique, key=rank_key)
+
+
+def rank_key(item: Finding) -> tuple:
+    """Severity first, then confidence, then a stable location order."""
+    return (-RANK[item.severity], -round(item.confidence, 3), item.path, item.line, item.category)
 
 
 def executive_summary(findings: list[Finding], warnings: list[str]) -> str:

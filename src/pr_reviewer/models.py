@@ -116,3 +116,6 @@ class ReviewResult(BaseModel):
     agent_runs: list[AgentRun] = Field(default_factory=list)
     summary: str = ""
     head_sha: str | None = None
+    review_id: int | None = None
+    published: bool = False
+    publish_error: str | None = None

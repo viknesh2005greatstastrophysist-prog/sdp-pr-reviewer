@@ -18,6 +18,7 @@ async def review_diff(
     *,
     agent_timeout: float = 45,
     use_langgraph: bool = True,
+    min_confidence: float = 0.0,
 ) -> ReviewResult:
     files = parse_diff(raw)
     warnings: list[str] = []
@@ -40,6 +41,14 @@ async def review_diff(
         runs = []
     warnings.extend(agent_warnings)
     findings = aggregate(static + agent_findings)
+    if min_confidence > 0:
+        kept = [item for item in findings if item.confidence >= min_confidence]
+        if len(kept) < len(findings):
+            warnings.append(
+                f"Suppressed {len(findings) - len(kept)} finding(s) below confidence "
+                f"{min_confidence:.2f}."
+            )
+        findings = kept
     return ReviewResult(
         files=files,
         findings=findings,

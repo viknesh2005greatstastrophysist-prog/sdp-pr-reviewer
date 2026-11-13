@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -13,6 +14,9 @@ import jwt
 
 from .models import DiffFile, PullRequestRef, ReviewResult
 from .refactor import RefactoringEngine
+
+RETRY_ATTEMPTS = 3
+RETRY_BASE_DELAY = 0.5
 
 
 class GitHubError(RuntimeError):
@@ -45,11 +49,30 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        async with httpx.AsyncClient(timeout=30, transport=self.transport) as client:
-            response = await client.request(
-                method, f"{self.api_url}{path}", headers=self.headers, **kwargs
+    async def _send(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        """Send with bounded retry for rate limits, 5xx responses and transport errors."""
+        headers = kwargs.pop("headers", self.headers)
+        response: httpx.Response | None = None
+        for attempt in range(RETRY_ATTEMPTS):
+            try:
+                async with httpx.AsyncClient(timeout=30, transport=self.transport) as client:
+                    response = await client.request(method, url, headers=headers, **kwargs)
+            except httpx.TransportError as exc:
+                if attempt == RETRY_ATTEMPTS - 1:
+                    raise GitHubError(f"GitHub API {method} unreachable: {exc}") from exc
+                await asyncio.sleep(RETRY_BASE_DELAY * 2**attempt)
+                continue
+            retryable = response.status_code in {429, 502, 503, 504} or (
+                response.status_code == 403 and response.headers.get("x-ratelimit-remaining") == "0"
             )
+            if not retryable or attempt == RETRY_ATTEMPTS - 1:
+                return response
+            await asyncio.sleep(RETRY_BASE_DELAY * 2**attempt)
+        assert response is not None
+        return response
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        response = await self._send(method, f"{self.api_url}{path}", **kwargs)
         if response.status_code >= 400:
             raise GitHubError(
                 f"GitHub API {method} {path} returned {response.status_code}: {response.text[:300]}"
@@ -63,13 +86,63 @@ class GitHubClient:
 
     async def diff(self, ref: PullRequestRef) -> str:
         headers = {**self.headers, "Accept": "application/vnd.github.v3.diff"}
-        async with httpx.AsyncClient(timeout=30, transport=self.transport) as client:
-            response = await client.get(
-                f"{self.api_url}/repos/{ref.owner}/{ref.repo}/pulls/{ref.number}", headers=headers
-            )
+        response = await self._send(
+            "GET",
+            f"{self.api_url}/repos/{ref.owner}/{ref.repo}/pulls/{ref.number}",
+            headers=headers,
+        )
         if response.status_code >= 400:
             raise GitHubError(f"Unable to fetch PR diff: {response.status_code}")
         return response.text
+
+    async def current_user(self) -> dict[str, Any]:
+        return (await self._request("GET", "/user")).json()
+
+    async def user_repositories(self, limit: int = 100) -> list[dict[str, Any]]:
+        repos = (
+            await self._request(
+                "GET",
+                "/user/repos",
+                params={
+                    "sort": "updated",
+                    "per_page": min(limit, 100),
+                    "affiliation": "owner,collaborator,organization_member",
+                },
+            )
+        ).json()
+        return [
+            {
+                "full_name": item["full_name"],
+                "owner": item["owner"]["login"],
+                "name": item["name"],
+                "private": item.get("private", False),
+                "language": item.get("language"),
+                "updated_at": item.get("updated_at"),
+                "open_issues": item.get("open_issues_count", 0),
+            }
+            for item in repos
+        ]
+
+    async def pull_requests(
+        self, owner: str, repo: str, state: str = "open"
+    ) -> list[dict[str, Any]]:
+        pulls = (
+            await self._request(
+                "GET", f"/repos/{owner}/{repo}/pulls", params={"state": state, "per_page": 50}
+            )
+        ).json()
+        return [
+            {
+                "number": item["number"],
+                "title": item["title"],
+                "author": (item.get("user") or {}).get("login"),
+                "head_sha": item["head"]["sha"],
+                "updated_at": item.get("updated_at"),
+                "draft": item.get("draft", False),
+                "html_url": item.get("html_url"),
+            }
+            for item in pulls
+        ]
 
     async def materialize_changed_files(
         self, ref: PullRequestRef, files: list[DiffFile], destination: Path

@@ -11,31 +11,63 @@ class Settings:
     github_private_key: str | None = None
     github_webhook_secret: str | None = None
     github_api_url: str = "https://api.github.com"
+    github_oauth_url: str = "https://github.com"
+    github_oauth_client_id: str | None = None
+    github_oauth_client_secret: str | None = None
+    github_oauth_scopes: str = "repo read:user"
+    session_secret: str | None = None
+    public_base_url: str = "http://localhost:8000"
     llm_api_key: str | None = None
     llm_model: str = "gpt-4.1-mini"
     llm_base_url: str = "https://api.openai.com/v1"
     database_url: str = "sqlite:///./review_history.db"
     agent_timeout: float = 45.0
+    # Server-level permission to publish. A review is published only when this is true
+    # AND the individual request opts in (dashboard/API) or WEBHOOK_AUTO_PUBLISH is true.
     publish_reviews: bool = False
+    webhook_auto_publish: bool = False
+    review_concurrency: int = 2
+    min_confidence: float = 0.0
+
+    @property
+    def oauth_configured(self) -> bool:
+        return bool(self.github_oauth_client_id and self.github_oauth_client_secret)
+
+    @property
+    def server_github_configured(self) -> bool:
+        return bool(self.github_token or (self.github_app_id and self.github_private_key))
 
     @classmethod
     def from_env(cls) -> Settings:
         def enabled(name: str) -> bool:
             return os.getenv(name, "").casefold() in {"1", "true", "yes", "on"}
 
-        private_key = os.getenv("GITHUB_PRIVATE_KEY")
+        def text(name: str) -> str | None:
+            value = os.getenv(name, "").strip()
+            return value or None
+
+        private_key = text("GITHUB_PRIVATE_KEY")
         if private_key:
             private_key = private_key.replace("\\n", "\n")
         return cls(
-            github_token=os.getenv("GITHUB_TOKEN"),
-            github_app_id=os.getenv("GITHUB_APP_ID"),
+            github_token=text("GITHUB_TOKEN"),
+            github_app_id=text("GITHUB_APP_ID"),
             github_private_key=private_key,
-            github_webhook_secret=os.getenv("GITHUB_WEBHOOK_SECRET"),
-            github_api_url=os.getenv("GITHUB_API_URL", cls.github_api_url),
-            llm_api_key=os.getenv("LLM_API_KEY"),
-            llm_model=os.getenv("LLM_MODEL", cls.llm_model),
-            llm_base_url=os.getenv("LLM_BASE_URL", cls.llm_base_url),
-            database_url=os.getenv("DATABASE_URL", cls.database_url),
-            agent_timeout=float(os.getenv("AGENT_TIMEOUT", str(cls.agent_timeout))),
+            github_webhook_secret=text("GITHUB_WEBHOOK_SECRET"),
+            github_api_url=text("GITHUB_API_URL") or cls.github_api_url,
+            github_oauth_url=text("GITHUB_OAUTH_URL") or cls.github_oauth_url,
+            github_oauth_client_id=text("GITHUB_OAUTH_CLIENT_ID"),
+            github_oauth_client_secret=text("GITHUB_OAUTH_CLIENT_SECRET"),
+            github_oauth_scopes=text("GITHUB_OAUTH_SCOPES") or cls.github_oauth_scopes,
+            session_secret=text("SESSION_SECRET"),
+            public_base_url=(text("PUBLIC_BASE_URL") or cls.public_base_url).rstrip("/"),
+            llm_api_key=text("LLM_API_KEY"),
+            llm_model=text("LLM_MODEL") or cls.llm_model,
+            llm_base_url=text("LLM_BASE_URL") or cls.llm_base_url,
+            database_url=text("DATABASE_URL") or cls.database_url,
+            agent_timeout=float(text("AGENT_TIMEOUT") or cls.agent_timeout),
             publish_reviews=enabled("PUBLISH_REVIEWS"),
+            webhook_auto_publish=enabled("WEBHOOK_AUTO_PUBLISH"),
+            review_concurrency=max(1, int(text("REVIEW_CONCURRENCY") or cls.review_concurrency)),
+            min_confidence=min(1.0, max(0.0, float(text("MIN_CONFIDENCE") or 0.0))),
         )
