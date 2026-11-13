@@ -236,3 +236,119 @@ def test_llm_schema_satisfies_strict_mode_and_keeps_field_names():
         )
     )
     assert parsed.findings[0].end_line is None
+
+
+MULTI_HUNK = """diff --git a/svc.py b/svc.py
+--- a/svc.py
++++ b/svc.py
+@@ -1,4 +1,5 @@
+ import os
+-import sys
++import json
++import time
+ 
+ def load(path):
+@@ -20,3 +21,4 @@ def load(path):
+     data = read(path)
++    cache[path] = data
+     return data
+ 
+diff --git a/gone.py b/gone.py
+deleted file mode 100644
+--- a/gone.py
++++ /dev/null
+@@ -1,1 +0,0 @@
+-x = 1
+"""
+
+
+class FakeClient:
+    def __init__(self, findings):
+        self.findings = findings
+        self.prompts = []
+
+    async def structured(self, system, prompt, schema):
+        self.prompts.append(prompt)
+        return schema(findings=self.findings)
+
+
+def agent_finding(line, evidence, path="svc.py"):
+    return Finding(
+        path=path,
+        line=line,
+        category="bug-hunter",
+        severity=Severity.MEDIUM,
+        message="Unbounded module-level cache",
+        evidence=evidence,
+        source="bug-hunter",
+    )
+
+
+def review_with(findings, diff=MULTI_HUNK):
+    import asyncio
+
+    from pr_reviewer.agents import LLMReviewAgent, run_agent
+
+    client = FakeClient(findings)
+    agent = LLMReviewAgent("bug-hunter", client)
+    kept, _, warning = asyncio.run(run_agent(agent, parse_diff(diff), timeout=5))
+    return kept, warning, client
+
+
+def test_numbered_diff_labels_match_parser_line_numbers():
+    import re
+
+    from pr_reviewer.agents import render_numbered_diff
+
+    files = parse_diff(MULTI_HUNK)
+    text = render_numbered_diff(files)
+    shown = {
+        (int(m.group(1)), m.group(2) == "+", m.group(3))
+        for m in re.finditer(r"^L(\d+) ([+ ]) (.*)$", text, re.M)
+    }
+    expected = {
+        (line.new_line, line.kind == "ADD", line.text)
+        for line in files[0].lines
+        if line.kind != "DELETE"
+    }
+    assert shown == expected
+    assert (22, True, "    cache[path] = data") in shown  # second hunk starts at +21
+    assert "      - import sys" in text
+    assert "gone.py" not in text  # deleted file has nothing to review
+
+
+def test_numbered_diff_budget_keeps_whole_hunks_only():
+    from pr_reviewer.agents import render_numbered_diff
+
+    full = render_numbered_diff(parse_diff(MULTI_HUNK))
+    second_hunk = full.index("\n@@ -20")
+    trimmed = render_numbered_diff(parse_diff(MULTI_HUNK), budget=second_hunk + 10)
+    assert "L3 + import time" in trimmed
+    assert "cache[path]" not in trimmed and "@@ -20" not in trimmed
+    assert "omitted for length" in trimmed
+    assert render_numbered_diff([]) == ""
+
+
+def test_near_miss_finding_snaps_to_the_added_line_its_evidence_quotes():
+    kept, warning, _ = review_with([agent_finding(20, "cache[path] = data")])
+    assert [finding.line for finding in kept] == [22]
+    assert warning is None
+
+
+def test_near_miss_without_matching_evidence_is_dropped_and_reported():
+    kept, warning, _ = review_with(
+        [
+            agent_finding(20, "requests.get(url)"),  # near an added line, wrong evidence
+            agent_finding(40, "cache[path] = data"),  # right evidence, too far away
+            agent_finding(3, "import time", path="other.py"),  # file not in the diff
+            agent_finding(2, "import json"),  # exact added line, kept untouched
+        ]
+    )
+    assert [(finding.path, finding.line) for finding in kept] == [("svc.py", 2)]
+    assert warning == "bug-hunter: 3 finding(s) dropped, not on an added line"
+
+
+def test_diff_with_nothing_added_skips_the_model_call():
+    only_deleted = MULTI_HUNK[MULTI_HUNK.index("diff --git a/gone.py") :]
+    kept, warning, client = review_with([agent_finding(1, "x = 1")], diff=only_deleted)
+    assert kept == [] and warning is None and client.prompts == []
