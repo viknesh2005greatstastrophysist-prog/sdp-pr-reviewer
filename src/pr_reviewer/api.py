@@ -20,7 +20,7 @@ from .database import ReviewStore, Scope
 from .demos import DEMO_CASES, demo_agents
 from .github import GitHubClient, GitHubError, app_installation_client, verify_webhook_signature
 from .jobs import JobManager
-from .llm import OpenAICompatibleClient
+from .llm import build_llm_client
 from .models import PullRequestRef, ReviewResult
 from .pipeline import review_diff
 from .refactor import RefactoringEngine
@@ -166,12 +166,7 @@ def require_same_origin(origin: str | None = Header(default=None)) -> None:
 def _agents_for(config: Settings):
     if not config.llm_api_key:
         return None
-    client = OpenAICompatibleClient(
-        api_key=config.llm_api_key,
-        model=config.llm_model,
-        base_url=config.llm_base_url,
-        timeout=config.agent_timeout,
-    )
+    client = build_llm_client(config)
     return [LLMReviewAgent(category, client) for category in SPECIALIZATIONS]
 
 
@@ -218,6 +213,11 @@ def dashboard_status():
         "password_login_enabled": config.password_login_enabled,
         "llm_connected": bool(config.llm_api_key),
         "llm_model": config.llm_model if config.llm_api_key else None,
+        "llm_fallback_model": (
+            config.llm_fallback_model
+            if config.llm_api_key and config.llm_fallback_api_key
+            else None
+        ),
         "webhook_configured": bool(config.github_webhook_secret),
         "publishing_enabled": config.publish_reviews,
         "webhook_auto_publish": config.publish_reviews and config.webhook_auto_publish,

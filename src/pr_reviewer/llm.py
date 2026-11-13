@@ -136,3 +136,61 @@ def _strip_fence(content: str) -> str:
         if text.rstrip().endswith("```"):
             text = text.rstrip()[:-3]
     return text
+
+
+class FallbackLLMClient:
+    """Primary provider first; the same request goes to a second provider when it fails.
+
+    Two free tiers (for example Gemini and Groq) have separate quotas, so a rate limit on
+    one does not fail an agent. Token counters cover both providers.
+    """
+
+    def __init__(self, primary: OpenAICompatibleClient, fallback: OpenAICompatibleClient):
+        self.primary = primary
+        self.fallback = fallback
+        self.model = primary.model
+        self.fallback_calls = 0
+
+    @property
+    def prompt_tokens(self) -> int:
+        return self.primary.prompt_tokens + self.fallback.prompt_tokens
+
+    @property
+    def completion_tokens(self) -> int:
+        return self.primary.completion_tokens + self.fallback.completion_tokens
+
+    async def structured(self, system: str, user: str, schema: type[BaseModel]) -> BaseModel:
+        try:
+            return await self.primary.structured(system, user, schema)
+        except LLMError as primary_error:
+            self.fallback_calls += 1
+            try:
+                return await self.fallback.structured(system, user, schema)
+            except LLMError as fallback_error:
+                raise LLMError(
+                    f"primary {self.primary.model}: {primary_error}; "
+                    f"fallback {self.fallback.model}: {fallback_error}"
+                ) from fallback_error
+
+
+def build_llm_client(settings, timeout: float | None = None):
+    """Production client: the configured provider, plus the fallback when one is set."""
+    timeout = settings.agent_timeout if timeout is None else timeout
+    has_fallback = bool(settings.llm_fallback_api_key)
+    primary = OpenAICompatibleClient(
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        base_url=settings.llm_base_url,
+        timeout=timeout,
+        # With a fallback available, hand over after one retry instead of waiting out limits.
+        max_retries=1 if has_fallback else 4,
+    )
+    if not has_fallback:
+        return primary
+    fallback = OpenAICompatibleClient(
+        api_key=settings.llm_fallback_api_key,
+        model=settings.llm_fallback_model,
+        base_url=settings.llm_fallback_base_url,
+        timeout=timeout,
+    )
+    return FallbackLLMClient(primary, fallback)

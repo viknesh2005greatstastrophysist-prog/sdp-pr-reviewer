@@ -8,7 +8,7 @@ from .agents import SPECIALIZATIONS, LLMReviewAgent, OfflineAgent
 from .aggregator import executive_summary
 from .database import ReviewStore
 from .github import GitHubClient, GitHubError
-from .llm import OpenAICompatibleClient
+from .llm import OpenAICompatibleClient, build_llm_client
 from .models import PullRequestRef, ReviewResult
 from .parser import parse_diff
 from .pipeline import review_diff
@@ -27,24 +27,14 @@ class ReviewService:
     def agents(self):
         if not self.settings.llm_api_key:
             return [OfflineAgent(category) for category in SPECIALIZATIONS]
-        client = OpenAICompatibleClient(
-            api_key=self.settings.llm_api_key,
-            model=self.settings.llm_model,
-            base_url=self.settings.llm_base_url,
-            timeout=self.settings.agent_timeout,
-        )
+        client = build_llm_client(self.settings)
         return [LLMReviewAgent(category, client) for category in SPECIALIZATIONS]
 
     def verifier(self) -> OpenAICompatibleClient | None:
         """Client for the verification pass (focused mode with an LLM configured)."""
         if not (self.settings.llm_api_key and self.settings.review_verify):
             return None
-        return OpenAICompatibleClient(
-            api_key=self.settings.llm_api_key,
-            model=self.settings.llm_model,
-            base_url=self.settings.llm_base_url,
-            timeout=self.settings.agent_timeout,
-        )
+        return build_llm_client(self.settings)
 
     async def review_pull_request(
         self, ref: PullRequestRef, publish: bool | None = None, requested_by: str | None = None

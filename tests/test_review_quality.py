@@ -111,3 +111,45 @@ def test_gemini_retry_delay_in_the_body_is_honoured():
     response = httpx.Response(429, json=body)
     assert _retry_delay(response, 0) == 17.0
     assert _retry_delay(httpx.Response(429, json={"error": {}}), 0) == 4
+
+
+def test_rate_limited_primary_hands_the_call_to_the_fallback_provider():
+    """Two free tiers: a Gemini 429 should not fail an agent when Groq is configured."""
+    import asyncio
+
+    import httpx
+    from pydantic import BaseModel
+
+    from pr_reviewer.llm import FallbackLLMClient, OpenAICompatibleClient
+
+    class Answer(BaseModel):
+        ok: bool
+
+    def limited(request):
+        return httpx.Response(429, json={"error": {"message": "rate limited"}})
+
+    def healthy(request):
+        body = {"choices": [{"message": {"content": '{"ok": true}'}}], "usage": {}}
+        return httpx.Response(200, json=body)
+
+    primary = OpenAICompatibleClient(
+        api_key="a", model="gemini", max_retries=0, transport=httpx.MockTransport(limited)
+    )
+    fallback = OpenAICompatibleClient(
+        api_key="b", model="groq", max_retries=0, transport=httpx.MockTransport(healthy)
+    )
+    client = FallbackLLMClient(primary, fallback)
+    assert asyncio.run(client.structured("s", "u", Answer)).ok is True
+    assert client.fallback_calls == 1
+
+
+def test_production_client_uses_fallback_only_when_configured():
+    from pr_reviewer.llm import FallbackLLMClient, OpenAICompatibleClient, build_llm_client
+    from pr_reviewer.settings import Settings
+
+    plain = build_llm_client(Settings(llm_api_key="k", llm_model="m"))
+    assert isinstance(plain, OpenAICompatibleClient)
+    both = build_llm_client(Settings(llm_api_key="k", llm_fallback_api_key="g"))
+    assert isinstance(both, FallbackLLMClient)
+    assert both.fallback.base_url == "https://api.groq.com/openai/v1"
+    assert both.primary.max_retries == 1

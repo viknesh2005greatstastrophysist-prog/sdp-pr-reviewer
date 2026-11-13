@@ -47,6 +47,10 @@ class Settings:
     llm_api_key: str | None = None
     llm_model: str = "gpt-4.1-mini"
     llm_base_url: str = "https://api.openai.com/v1"
+    # Optional second provider, tried when the primary is rate-limited or out of quota.
+    llm_fallback_api_key: str | None = None
+    llm_fallback_model: str = "openai/gpt-oss-120b"
+    llm_fallback_base_url: str = "https://api.groq.com/openai/v1"
     database_url: str = "sqlite:///./review_history.db"
     agent_timeout: float = 45.0
     # Server-level permission to publish. A review is published only when this is true
@@ -111,6 +115,9 @@ class Settings:
             llm_api_key=text("LLM_API_KEY"),
             llm_model=text("LLM_MODEL") or cls.llm_model,
             llm_base_url=text("LLM_BASE_URL") or cls.llm_base_url,
+            llm_fallback_api_key=text("LLM_FALLBACK_API_KEY"),
+            llm_fallback_model=text("LLM_FALLBACK_MODEL") or cls.llm_fallback_model,
+            llm_fallback_base_url=text("LLM_FALLBACK_BASE_URL") or cls.llm_fallback_base_url,
             database_url=normalise_database_url(text("DATABASE_URL") or cls.database_url),
             agent_timeout=float(text("AGENT_TIMEOUT") or cls.agent_timeout),
             publish_reviews=enabled("PUBLISH_REVIEWS"),
