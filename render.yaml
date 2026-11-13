@@ -26,8 +26,9 @@ services:
         sync: false
       - key: LLM_API_KEY
         sync: false
+      # PBKDF2 hashes only (600k iterations); plain passwords are never committed.
       - key: DEMO_ACCOUNTS
-        sync: false
+        value: "guide:pbkdf2_sha256$600000$7+kwGUSFIGVy/Lbwb1SKrA==$G+/UvnPMdWFSyfOkHJO2OGZqXQBL1DtvpTp+e6Ibi9s=,team61:pbkdf2_sha256$600000$QR7LkxCR1K9nrRXTkZ34Zw==$yDUp6qyj90htJ4S7ZNqe2/dCpBrkbko5Z1JaNBwoAYE=,evaluator:pbkdf2_sha256$600000$RqEKKR6SEUlGMaeACrMEWw==$wUOA0faWnjy0Ut8UuJTsTT2L/vWmAQiIJ3WQ19glhiw="
       - key: LLM_MODEL
         value: gpt-4.1-mini
       - key: PUBLISH_REVIEWS
