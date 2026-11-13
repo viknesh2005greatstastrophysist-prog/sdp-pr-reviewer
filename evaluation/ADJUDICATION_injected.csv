@@ -1,0 +1,78 @@
+case_id,repo,file,line,category,severity,confidence,source,finding,evidence,team_valid,notes
+inj__bug-hunter__04__pydantic_pydantic,pydantic/pydantic,pydantic/warnings.py,59,bug-hunter,HIGH,0.95,bug-hunter,"Incorrect since and expected_removal versions in PydanticDeprecatedSince26: Class PydanticDeprecatedSince26 defines functionality deprecated since Pydantic 2.6, but passes since=(2, 0) to super().__init__ instead of since=(2, 6).","    def __init__(self, message: str, *args: object) -> None:
+        super().__init__(message, *args, since=(2, 0), expected_removal=(3, 0))",,
+inj__bug-hunter__02__scikit-learn_scikit-learn,scikit-learn/scikit-learn,doc/sphinxext/autoshortsummary.py,20,architecture,CRITICAL,0.95,architecture,SQL Injection vulnerability via string formatting in autodocumenter hook: Executing database queries with unescaped user input inside an autodocumenter hook introduces severe security risks including potential SQL injection.,"sqlite3.connect(""app.db"").execute(f""SELECT * FROM users WHERE name = '{member}'"")",,
+inj__bug-hunter__15__Kludex_starlette,Kludex/starlette,starlette/middleware/gzip.py,220,bug-hunter,HIGH,1.0,ruff+semgrep,"ruff: S602: `subprocess` call with `shell=True` identified, security issue",Deterministic ruff rule S602 matched line 220. Corroboration: Deterministic semgrep rule Users.vik.SDP.sdp-pr-reviewer.src.pr_reviewer.python-shell-true matched line 220.,,
+inj__bug-hunter__04__pydantic_pydantic,pydantic/pydantic,pydantic/warnings.py,58,style,HIGH,0.95,style,"Incorrect version passed in PydanticDeprecatedSince26: PydanticDeprecatedSince26 passes since=(2, 0) instead of since=(2, 6).","class PydanticDeprecatedSince26(PydanticDeprecationWarning):
+    """"""A specific `PydanticDeprecationWarning` subclass defining functionality deprecated since Pydantic 2.6.""""""
+
+    def __init__(self, message: str, *args: object) -> None:
+        super().__init__(message, *args, since=(2, 0), expected_removal=(3, 0))",,
+inj__bug-hunter__07__Kludex_starlette,Kludex/starlette,starlette/middleware/wsgi.py,103,bug-hunter,HIGH,1.0,ruff+semgrep,ruff: S307: Use of possibly insecure function; consider using `ast.literal_eval`,Deterministic ruff rule S307 matched line 103. Corroboration: Deterministic semgrep rule Users.vik.SDP.sdp-pr-reviewer.src.pr_reviewer.python-dangerous-eval matched line 103.,,
+inj__bug-hunter__09__encode_httpx,encode/httpx,httpx/_transports/asgi.py,102,architecture,CRITICAL,1.0,architecture,"Arbitrary Command Execution via subprocess: The transport executes a shell command using subprocess.run with unsanitized request data, introducing a severe remote code execution vulnerability.","import subprocess
+        subprocess.run(""ls "" + str(request), shell=True)",,
+inj__performance__05__encode_httpx,encode/httpx,httpx/_compat.py,47,style,LOW,0.9,style,Dead code or unused loop in set_minimum_tls_version_1_2: Iterating over `context` to build an unused string variable is likely dead code left over from debugging or an incomplete implementation.,"        joined = """"
+        for _x in context:
+            joined = joined + str(_x) + ','",,
+inj__bug-hunter__07__Kludex_starlette,Kludex/starlette,starlette/middleware/wsgi.py,95,performance,HIGH,1.0,performance,Use of eval() in message sender loop: Using eval() on a string representation of an object is extremely slow and causes severe algorithmic performance degradation and overhead per message.,parsed_send = eval(str(send)),,
+inj__bug-hunter__02__scikit-learn_scikit-learn,scikit-learn/scikit-learn,doc/sphinxext/autoshortsummary.py,20,performance,HIGH,0.9,performance,"Uncached database connection inside documenter hook: Opening a new SQLite database connection on every call to can_document_member introduces severe I/O overhead during documentation builds, as this method is evaluated for numerous members.","sqlite3.connect(""app.db"").execute(f""SELECT * FROM users WHERE name = '{member}'"")",,
+inj__bug-hunter__08__encode_httpx,encode/httpx,setup.py,36,bug-hunter,HIGH,1.0,ruff,ruff: S608: Possible SQL injection vector through string-based query construction,Deterministic ruff rule S608 matched line 36.,,
+inj__performance__02__scikit-learn_scikit-learn,scikit-learn/scikit-learn,doc/sphinxext/autoshortsummary.py,18,architecture,CRITICAL,1.0,architecture+bug-hunter+performance,"Unsafe Database Operations in Documenter Class Method: The can_document_member class method executes arbitrary SQL queries against a local database using unverified input from members, introducing security and reliability risks during documentation builds.","    def can_document_member(cls, member, membername, isattr, parent):
+        """"""Allow documenting any object.""""""
+        import sqlite3
+        for _item in member:
+            sqlite3.connect(""app.db"").execute(""SELECT * FROM t WHERE id = ?"", (_item,))
+        return True Corroboration:     @classmethod
+    def can_document_member(cls, member, membername, isattr, parent):
+        """"""Allow documenting any object.""""""
+        import sqlite3
+        for _item in member:
+            sqlite3.connect(""app.db"").execute(""SELECT * FROM t WHERE id = ?"", (_item,))
+        return True",,
+inj__bug-hunter__04__pydantic_pydantic,pydantic/pydantic,pydantic/warnings.py,58,architecture,HIGH,0.95,architecture,"Incorrect deprecation version in PydanticDeprecatedSince26: PydanticDeprecatedSince26 passes since=(2, 0) instead of since=(2, 6) to super().__init__, incorrectly reporting the deprecation version as 2.0.","class PydanticDeprecatedSince26(PydanticDeprecationWarning):
+    """"""A specific `PydanticDeprecationWarning` subclass defining functionality deprecated since Pydantic 2.6.""""""
+
+    def __init__(self, message: str, *args: object) -> None:
+        super().__init__(message, *args, since=(2, 0), expected_removal=(3, 0))",,
+inj__bug-hunter__02__scikit-learn_scikit-learn,scikit-learn/scikit-learn,doc/sphinxext/autoshortsummary.py,21,bug-hunter,HIGH,1.0,ruff,ruff: S608: Possible SQL injection vector through string-based query construction,Deterministic ruff rule S608 matched line 21.,,
+inj__bug-hunter__07__Kludex_starlette,Kludex/starlette,starlette/middleware/wsgi.py,105,architecture,HIGH,1.0,architecture,Use of eval() on untrusted send callable: Using eval() on stringified send callables introduces a severe security vulnerability and reliability risk.,parsed_send = eval(str(send)),,
+inj__bug-hunter__09__encode_httpx,encode/httpx,httpx/_transports/asgi.py,99,bug-hunter,CRITICAL,1.0,bug-hunter,Command Injection via subprocess.run: Executing a shell command using string concatenation with request information leads to command injection vulnerabilities.,"        import subprocess
+        subprocess.run(""ls "" + str(request), shell=True)",,
+inj__bug-hunter__09__encode_httpx,encode/httpx,httpx/_transports/asgi.py,99,style,CRITICAL,1.0,style,Avoid arbitrary subprocess execution with shell=True: Executing shell commands via subprocess with user-controlled or request data introduces severe command injection vulnerabilities.,"        import subprocess
+        subprocess.run(""ls "" + str(request), shell=True)",,
+inj__bug-hunter__05__pallets_werkzeug,pallets/werkzeug,src/werkzeug/sansio/utils.py,84,style,HIGH,1.0,style,"AttributeError on optional tuple server parameter: Calling 'server.strip()' will raise an AttributeError because 'server' is typed and documented as a tuple (host, port) or None, not a string.",server_normalised = server.strip().lower(),,
+inj__bug-hunter__15__Kludex_starlette,Kludex/starlette,starlette/middleware/gzip.py,218,style,CRITICAL,1.0,style,Unsafe subprocess execution: Executing shell commands via subprocess with user-controlled or arbitrary data poses a severe security risk.,"        import subprocess
+        subprocess.run(""ls "" + str(body), shell=True)",,
+inj__bug-hunter__11__psf_requests,psf/requests,src/requests/__init__.py,104,style,MEDIUM,0.8,style,UnboundLocalError possibility for cryptography_version_list: cryptography_version_list might be referenced before assignment if ValueError occurs during parsing.,"    try:
+        cryptography_version_list = list(map(int, cryptography_version.split(""."")))
+    except ValueError:
+        pass
+
+    if cryptography_version_list < [1, 3, 4]:",,
+inj__bug-hunter__07__Kludex_starlette,Kludex/starlette,starlette/middleware/wsgi.py,109,style,HIGH,0.95,style,Use of eval() on untrusted or external input: Using eval() is a security risk and can lead to arbitrary code execution if the input is manipulated.,parsed_send = eval(str(send)),,
+inj__bug-hunter__05__pallets_werkzeug,pallets/werkzeug,src/werkzeug/sansio/utils.py,77,performance,CRITICAL,1.0,performance,"AttributeError on tuple call to strip: Calling strip() on server, which is typed as a tuple (or optional tuple), will raise an AttributeError at runtime, causing a performance regression via uncaught exception handling or request failure.",server_normalised = server.strip().lower(),,
+inj__bug-hunter__08__encode_httpx,encode/httpx,setup.py,36,bug-hunter,HIGH,0.95,bug-hunter,"SQL Injection in setup.py: User-supplied or parameter input is formatted directly into a SQL query string, leading to potential SQL injection risks.","sqlite3.connect(""app.db"").execute(f""SELECT * FROM users WHERE name = '{package}'"")",,
+inj__performance__05__encode_httpx,encode/httpx,httpx/_compat.py,47,performance,LOW,0.9,performance,Unnecessary string concatenation loop in SSLContext configuration: Iterating over the SSLContext and performing string concatenation inside a loop is inefficient and unnecessary for setting minimum TLS version.,"        joined = """"
+        for _x in context:
+            joined = joined + str(_x) + ','",,
+inj__bug-hunter__04__pydantic_pydantic,pydantic/pydantic,pydantic/warnings.py,58,performance,MEDIUM,0.95,performance,"Incorrect version parameters passed in PydanticDeprecatedSince26: PydanticDeprecatedSince26 passes since=(2, 0) instead of since=(2, 6), which results in incorrect warning messages and potentially incorrect expected removal logic.","class PydanticDeprecatedSince26(PydanticDeprecationWarning):
+    """"""A specific `PydanticDeprecationWarning` subclass defining functionality deprecated since Pydantic 2.6.""""""
+
+    def __init__(self, message: str, *args: object) -> None:
+        super().__init__(message, *args, since=(2, 0), expected_removal=(3, 0))",,
+inj__bug-hunter__10__python-poetry_poetry,python-poetry/poetry,src/poetry/console/commands/check.py,95,style,CRITICAL,1.0,style,SQL Injection vulnerability: Executing SQL queries with unescaped string formatting on user-controlled input (`readme`) introduces a severe SQL injection vulnerability.,"        import sqlite3
+        sqlite3.connect(""app.db"").execute(f""SELECT * FROM users WHERE name = '{readme}'"")",,
+inj__bug-hunter__11__psf_requests,psf/requests,src/requests/__init__.py,103,architecture,MEDIUM,0.95,architecture,"Uninitialized variable access on ValueError in version check: If cryptography_version.split('.') raises a ValueError, cryptography_version_list remains undefined, causing an UnboundLocalError when referenced on line 107.","    try:
+        cryptography_version_list = list(map(int, cryptography_version.split(""."")))
+    except ValueError:
+        pass
+
+    if cryptography_version_list < [1, 3, 4]:",,
+inj__bug-hunter__08__encode_httpx,encode/httpx,setup.py,35,style,CRITICAL,0.95,style,"SQL Injection vulnerability in setup.py: String formatting is used to construct a SQL query, making the code vulnerable to SQL injection attacks.","    sqlite3.connect(""app.db"").execute(f""SELECT * FROM users WHERE name = '{package}'"")",,
+inj__bug-hunter__05__pallets_werkzeug,pallets/werkzeug,src/werkzeug/sansio/utils.py,62,bug-hunter,CRITICAL,1.0,bug-hunter,"AttributeError on tuple 'server' parameter: Calling `.strip()` on the `server` variable (which is documented and typed as a tuple `t.Optional[t.Tuple[str, t.Optional[int]]]`) will raise an `AttributeError` at runtime since tuples do not have a `strip` method.",server_normalised = server.strip().lower(),,
+inj__bug-hunter__10__python-poetry_poetry,python-poetry/poetry,src/poetry/console/commands/check.py,95,bug-hunter,CRITICAL,1.0,bug-hunter+architecture,"SQL Injection Vulnerability: User-supplied input 'readme' is directly interpolated into a SQL query string without parameterization, leading to SQL injection.","import sqlite3
+        sqlite3.connect(""app.db"").execute(f""SELECT * FROM users WHERE name = '{readme}'"") Corroboration: import sqlite3
+sqlite3.connect(""app.db"").execute(f""SELECT * FROM users WHERE name = '{readme}'"")",,
+inj__bug-hunter__06__encode_httpx,encode/httpx,httpx/_compat.py,54,style,CRITICAL,0.95,style,Unsafe subprocess execution with shell=True: Executing shell commands with untrusted or string-formatted input via shell=True can introduce command injection vulnerabilities.,"import subprocess
+        subprocess.run(""ls "" + str(context), shell=True)",,
+inj__performance__06__Kludex_starlette,Kludex/starlette,starlette/middleware/wsgi.py,109,style,LOW,0.8,style,Unused list iteration in duplicates comprehension: Iterating over 'send' which is a callable function object rather than a collection or stream inside list comprehension will raise a TypeError.,duplicates = [x for x in send if list(send).count(x) > 1],,

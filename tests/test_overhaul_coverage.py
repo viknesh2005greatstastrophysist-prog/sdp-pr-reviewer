@@ -701,3 +701,15 @@ def test_score_report_carries_cis_pairs_and_skips_incomplete_cases():
     text = scoring.policy_table(tables["test"], "location")
     assert "[" in text and "never-run" not in text
     assert "includes 0" in scoring.paired_table(tables["test"])
+
+
+def test_case_is_clean_requires_every_agent_and_verification_to_succeed():
+    ok = CaseRecord(agent_runs=success())
+    bad_run = CaseRecord(
+        agent_runs=[AgentRun(agent="a", status="timed_out", duration_ms=1, finding_count=0)]
+    )
+    bad_verify = CaseRecord(agent_runs=success(), verify_error="x")
+    preds = {"s": {"1": ok, "2": bad_run, "3": bad_verify}, "h": {"1": ok, "2": ok, "3": ok}}
+    assert evaluation_module.case_is_clean(preds, ["s", "h"], "1")
+    assert not evaluation_module.case_is_clean(preds, ["s", "h"], "2")
+    assert not evaluation_module.case_is_clean(preds, ["s", "h"], "3")

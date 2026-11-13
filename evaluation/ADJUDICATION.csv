@@ -1,0 +1,2 @@
+case_id,repo,file,line,category,severity,confidence,source,finding,evidence,team_valid,notes
+Kludex__starlette__2180,Kludex/starlette,starlette/_compat.py,21,bug-hunter,HIGH,1.0,ruff,ruff: S324: Probable use of insecure hash functions in `hashlib`: `md5`,Deterministic ruff rule S324 matched line 21.,,

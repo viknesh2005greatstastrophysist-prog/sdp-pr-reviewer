@@ -146,6 +146,8 @@ def paired_difference(counts_a, counts_b, indices=None) -> dict[str, Any]:
 
 
 PAIRS = (
+    ("single-agent", "static-only"),
+    ("single-agent (focused)", "static-only (focused)"),
     ("hybrid (full)", "single-agent"),
     ("hybrid (full)", "static-only"),
     ("hybrid (focused)", "single-agent (focused)"),
@@ -358,7 +360,10 @@ def tune(
     strategy: str = "hybrid-multi-agent",
 ) -> dict[str, Any]:
     """Pick pruned rules and thresholds on the dev split(s) only (mean location-only F1)."""
-    dev = [(name, select_cases(cases, "dev"), report) for name, cases, report in benchmarks]
+    dev = [
+        (name, select_cases(completed(cases, report), "dev"), report)
+        for name, cases, report in benchmarks
+    ]
     base = FocusConfig()
     stats: dict[str, dict[str, int]] = {}
     for _, cases, report in dev:
@@ -425,10 +430,11 @@ def adjudication_rows(
     strategy: str = "hybrid-multi-agent",
     size: int = ADJUDICATION_SIZE,
     seed: int = ADJUDICATION_SEED,
+    split: str = "test",
 ) -> list[dict[str, Any]]:
     """Seeded random sample of the focused hybrid's unmatched findings on the test split."""
     pool = []
-    for case in select_cases(cases, "test"):
+    for case in select_cases(cases, split):
         record = report.predictions[strategy][case.case_id]
         findings = focus_transform(record, config, verify=verify)
         _, false_positives, _ = match_detail(
@@ -598,14 +604,20 @@ def main() -> None:
     tune_cmd.add_argument("--injected", nargs=2, metavar=("CORPUS", "RESULTS"))
     tune_cmd.add_argument("--output", type=Path, required=True)
     score_cmd = sub.add_parser("score", help="write split tables for the current defaults")
-    score_cmd.add_argument("--human", nargs=2, metavar=("CORPUS", "RESULTS"), required=True)
+    score_cmd.add_argument("--human", nargs=2, metavar=("CORPUS", "RESULTS"))
     score_cmd.add_argument("--injected", nargs=2, metavar=("CORPUS", "RESULTS"))
     score_cmd.add_argument("--output", type=Path, required=True)
     score_cmd.add_argument("--adjudication", type=Path)
     score_cmd.add_argument("--no-verify", action="store_true")
     args = parser.parse_args()
 
-    benchmarks = [("human-comments", *_load(*map(Path, args.human)))]
+    benchmarks = []
+    if args.human:
+        benchmarks.append(("human-comments", *_load(*map(Path, args.human))))
+    if not benchmarks and not args.injected:
+        raise SystemExit("give --human and/or --injected")
+    if args.command == "tune" and not benchmarks:
+        raise SystemExit("tuning needs --human")
     if args.injected:
         benchmarks.append(("injected-defects", *_load(*map(Path, args.injected))))
     if args.command == "tune":
@@ -647,7 +659,7 @@ def main() -> None:
                 for split in SPLITS
             }
             if args.adjudication:
-                rows = adjudication_rows(cases, report, config, verify=verify)
+                rows = adjudication_rows(completed(cases, report), report, config, verify=verify)
                 entry["adjudication_pool"] = rows[-1]["_pool"]
                 entry["adjudication_rows"] = write_adjudication(rows, args.adjudication)
         else:

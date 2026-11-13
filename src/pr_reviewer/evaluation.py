@@ -382,6 +382,17 @@ class QuotaExhausted(RuntimeError):
     """Raised when consecutive cases fail on every agent: stop instead of burning quota."""
 
 
+def case_is_clean(
+    predictions: dict[str, dict[str, CaseRecord]], names: list[str], case_id: str
+) -> bool:
+    """True when no agent run and no verification of the case failed, in any named strategy."""
+    for name in names:
+        record = predictions[name][case_id]
+        if record.verify_error or any(run.status != "success" for run in record.agent_runs):
+            return False
+    return True
+
+
 def drop_failed_records(predictions: dict[str, dict[str, CaseRecord]]) -> int:
     """Forget records whose agents or verification failed so a resume re-runs exactly those."""
     dropped = 0
@@ -708,6 +719,11 @@ def main() -> None:
         help="drop checkpointed cases with failed agents/verification and run them again",
     )
     parser.add_argument(
+        "--clean-only",
+        action="store_true",
+        help="with --report-only: also drop cases where any agent run or verification failed",
+    )
+    parser.add_argument(
         "--report-only",
         action="store_true",
         help="no LLM calls: report only the cases the checkpoint already holds for every strategy",
@@ -746,6 +762,8 @@ def main() -> None:
         held = _load_checkpoint(args.checkpoint)
         wanted = [name for name in strategies if name != "static-only"] or list(strategies)
         cases = [c for c in cases if all(c.case_id in held.get(n, {}) for n in wanted)]
+        if args.clean_only:
+            cases = [c for c in cases if case_is_clean(held, wanted, c.case_id)]
         if not cases:
             raise SystemExit("checkpoint holds no complete case for these strategies")
     if args.limit:
