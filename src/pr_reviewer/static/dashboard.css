@@ -444,3 +444,6 @@ input[role="switch"]:disabled { opacity: .5; cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* GitHub sign-in shown but unavailable on servers without an OAuth App. */
+.btn.is-disabled { opacity: .45; pointer-events: none; cursor: default; }

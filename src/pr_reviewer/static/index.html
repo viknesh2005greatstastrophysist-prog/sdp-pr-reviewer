@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/assets/dashboard.css?v=5">
+  <link rel="stylesheet" href="/assets/dashboard.css?v=6">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -62,9 +62,9 @@
                 <p class="card-caption" id="liveNote" role="status"></p>
 
                 <div id="signInPrompt" class="signin hidden">
-                  <div id="githubSignIn" class="signin-github hidden">
-                    <a class="btn btn-primary" href="/auth/github/login">Sign in with GitHub</a>
-                    <p class="field-note">Lists your repositories and open pull requests. Read access only.</p>
+                  <div id="githubSignIn" class="signin-github">
+                    <a class="btn btn-primary" id="githubSignInLink" href="/auth/github/login">Sign in with GitHub</a>
+                    <p class="field-note" id="githubSignInNote">Lists your repositories and open pull requests. PRISM never pushes, approves or merges; it posts comments only if you switch that on.</p>
                   </div>
                   <div id="passwordForm" class="signin-form hidden" role="group" aria-labelledby="passwordFormTitle">
                     <h3 class="group-title" id="passwordFormTitle">Demo account</h3>
@@ -215,6 +215,6 @@
   </div>
 
   <div id="notice" class="toast hidden" role="status" aria-live="polite"></div>
-  <script src="/assets/dashboard.js?v=5" defer></script>
+  <script src="/assets/dashboard.js?v=6" defer></script>
 </body>
 </html>

@@ -698,7 +698,9 @@ function renderAccount() {
   } else if (auth.oauth_configured || auth.password_login_enabled) {
     fill(area,
       el("span", { class: "account-name account-who-text" }, el("small", { text: "Not signed in" })),
-      el("div", { class: "account-actions" }, el("button", { type: "button", class: "btn btn-small", text: "Sign in", onclick: goToSignIn })));
+      el("div", { class: "account-actions" },
+        auth.oauth_configured ? el("a", { class: "btn btn-small btn-primary", href: "/auth/github/login", text: "Sign in with GitHub" }) : null,
+        el("button", { type: "button", class: "btn btn-small", text: auth.oauth_configured ? "Demo account" : "Sign in", onclick: goToSignIn })));
   } else {
     fill(area, el("span", { class: "account-name account-who-text" }, el("small", { text: "Sign-in is not set up on this server" })));
   }
@@ -765,7 +767,16 @@ function renderLive() {
   $("#liveNote").textContent = notes[access.kind];
   const signin = access.kind === "needs-signin";
   $("#signInPrompt").classList.toggle("hidden", !signin);
-  $("#githubSignIn").classList.toggle("hidden", !(state.auth && state.auth.oauth_configured));
+  // The GitHub button is always shown; on a server without an OAuth App it is disabled and says why.
+  const oauthReady = Boolean(state.auth && state.auth.oauth_configured);
+  const githubLink = $("#githubSignInLink");
+  githubLink.classList.toggle("is-disabled", !oauthReady);
+  githubLink.setAttribute("aria-disabled", String(!oauthReady));
+  if (oauthReady) githubLink.setAttribute("href", "/auth/github/login");
+  else githubLink.removeAttribute("href");
+  $("#githubSignInNote").textContent = oauthReady
+    ? "Lists your repositories and open pull requests. PRISM never pushes, approves or merges; it posts comments only if you switch that on."
+    : "GitHub sign-in is not set up on this server yet (it needs GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET). Use a demo account meanwhile.";
   $("#passwordForm").classList.toggle("hidden", !(state.auth && state.auth.password_login_enabled));
   $("#passwordSubmit").classList.toggle("btn-primary", !(state.auth && state.auth.oauth_configured));
   $("#pickerBlock").classList.toggle("hidden", access.kind !== "signed-in");
