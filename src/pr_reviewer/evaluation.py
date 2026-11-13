@@ -673,6 +673,7 @@ def main() -> None:
         "--strategies", help="comma-separated subset, e.g. single-agent,hybrid-multi-agent"
     )
     parser.add_argument("--limit", type=int, help="evaluate only the first N cases")
+    parser.add_argument("--only-split", choices=("dev", "test"), help="evaluate one split only")
     parser.add_argument(
         "--splits-first",
         help="comma-separated split order, e.g. test,dev: run those splits first, in that order",
@@ -732,6 +733,8 @@ def main() -> None:
         if name not in strategies
     }
     cases = load_jsonl(args.corpus)
+    if args.only_split:
+        cases = [c for c in cases if c.metadata.get("split") == args.only_split]
     if args.per_repo:
         cases = limit_per_repo(cases, args.per_repo)
     if args.splits_first:
