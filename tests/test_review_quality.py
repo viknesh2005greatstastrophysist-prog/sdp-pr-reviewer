@@ -153,3 +153,35 @@ def test_production_client_uses_fallback_only_when_configured():
     assert isinstance(both, FallbackLLMClient)
     assert both.fallback.base_url == "https://api.groq.com/openai/v1"
     assert both.primary.max_retries == 1
+
+
+def test_static_analysis_does_not_block_the_event_loop(monkeypatch):
+    """Found on Render: Semgrep ran on the event loop, so the server answered nothing for
+    ~20 s and the proxy returned 502 to other users during a review."""
+    import asyncio
+    import time
+
+    from pr_reviewer import pipeline
+
+    window = {}
+
+    def slow_analyze(self, files, repo):
+        window["start"] = time.perf_counter()
+        time.sleep(0.4)
+        window["end"] = time.perf_counter()
+        return [], []
+
+    monkeypatch.setattr(pipeline.StaticAnalyzer, "analyze", slow_analyze)
+    beats: list[float] = []
+
+    async def scenario():
+        async def heartbeat():
+            for _ in range(30):
+                await asyncio.sleep(0.02)
+                beats.append(time.perf_counter())
+
+        await asyncio.gather(pipeline.review_diff(DIFF, None, agents=[]), heartbeat())
+
+    asyncio.run(scenario())
+    during = [t for t in beats if window["start"] < t < window["end"]]
+    assert len(during) >= 5, "the event loop stalled while the analyzer ran"

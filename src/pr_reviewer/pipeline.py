@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from .agents import CATEGORIES, BaseReviewAgent, OfflineAgent, dispatch, dispatch_runs
@@ -32,8 +33,10 @@ async def review_diff(
     files = parse_diff(raw)
     warnings: list[str] = []
     if repo:
-        warnings.extend(PythonContextExtractor().enrich(files, Path(repo)))
-    static, static_warnings = StaticAnalyzer().analyze(files, repo)
+        # Parsing and the analyzers block; run them off the event loop so the server keeps
+        # answering health checks and other users while a review is in progress.
+        warnings.extend(await asyncio.to_thread(PythonContextExtractor().enrich, files, Path(repo)))
+    static, static_warnings = await asyncio.to_thread(StaticAnalyzer().analyze, files, repo)
     warnings.extend(static_warnings)
     selected = agents if agents is not None else [OfflineAgent(category) for category in CATEGORIES]
     if sequential_agents:
