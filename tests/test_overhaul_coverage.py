@@ -655,3 +655,13 @@ def test_cli_offline_smoke_on_demo_diff(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["files"] and isinstance(payload["findings"], list) and payload["summary"]
     assert any(f["source"] for f in payload["findings"])
+
+
+def test_limit_per_repo_keeps_first_cases_of_each_repository_in_order():
+    cases = [
+        EvaluationCase(case_id=f"{repo}{i}", diff="", metadata={"repo": repo})
+        for repo in ("a", "b")
+        for i in range(3)
+    ]
+    kept = evaluation_module.limit_per_repo(cases, 2)
+    assert [c.case_id for c in kept] == ["a0", "a1", "b0", "b1"]

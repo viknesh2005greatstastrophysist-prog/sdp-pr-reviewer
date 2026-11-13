@@ -117,6 +117,18 @@ def load_jsonl(path: str | Path) -> list[EvaluationCase]:
     return cases
 
 
+def limit_per_repo(cases: list[EvaluationCase], per_repo: int) -> list[EvaluationCase]:
+    """The first `per_repo` cases of each repository, in corpus order (deterministic)."""
+    seen: dict[str, int] = {}
+    kept = []
+    for case in cases:
+        repo = case.metadata.get("repo", "")
+        if seen.get(repo, 0) < per_repo:
+            seen[repo] = seen.get(repo, 0) + 1
+            kept.append(case)
+    return kept
+
+
 def ground_truth(case: EvaluationCase, subset: str = "actionable") -> list[Finding]:
     """The human comments that count as expected findings.
 
@@ -438,38 +450,55 @@ async def evaluate(
     predictions = _load_checkpoint(checkpoint) if checkpoint else {}
     if redo_failed:
         drop_failed_records(predictions)
-    for name, strategy in strategies.items():
-        records = predictions.setdefault(name, {})
-        first = True
-        wants_verify = verifier is not None and hasattr(strategy, "rerun")
-        dead_streak = 0
+    for name in strategies:
+        predictions.setdefault(name, {})
+    streaks = dict.fromkeys(strategies, 0)
+    stopped: str | None = None
+    first = True
+    # Case-major: every strategy finishes a case before the next case starts, so a run that
+    # stops early (quota) still has complete, comparable cases.
+    try:
         for case in cases:
-            done = records.get(case.case_id)
-            if done is not None and (done.verified or not wants_verify):
-                continue  # resumed from the checkpoint
-            if case_delay and not first:
-                await sleep(case_delay)
-            first = False
-            if done is None:
-                done = records[case.case_id] = await run_case(
-                    strategy, case, max_passes=max_passes, retry_wait=retry_wait, sleep=sleep
-                )
-            if wants_verify:
-                await verify_record(
-                    verifier, case, done, passes=verify_passes, wait=retry_wait, sleep=sleep
-                )
-            if checkpoint:
-                _save_checkpoint(checkpoint, predictions)
-            everything_failed = bool(done.agent_runs) and all(
-                run.status != "success" for run in done.agent_runs
-            )
-            dead_streak = dead_streak + 1 if everything_failed else 0
-            if dead_streak >= stop_after_dead_cases:
-                raise QuotaExhausted(
-                    f"{name}: every agent failed on {dead_streak} consecutive cases "
-                    f"(last: {case.case_id}); stopping to protect quota. Checkpoint saved; "
-                    "resume with --redo-failed."
-                )
+            for name, strategy in strategies.items():
+                records = predictions[name]
+                wants_verify = verifier is not None and hasattr(strategy, "rerun")
+                done = records.get(case.case_id)
+                if done is not None and (done.verified or not wants_verify):
+                    continue  # resumed from the checkpoint
+                if case_delay and not first:
+                    await sleep(case_delay)
+                first = False
+                if done is None:
+                    done = records[case.case_id] = await run_case(
+                        strategy, case, max_passes=max_passes, retry_wait=retry_wait, sleep=sleep
+                    )
+                if wants_verify:
+                    await verify_record(
+                        verifier, case, done, passes=verify_passes, wait=retry_wait, sleep=sleep
+                    )
+                if checkpoint:
+                    _save_checkpoint(checkpoint, predictions)
+                dead = bool(done.agent_runs) and all(r.status != "success" for r in done.agent_runs)
+                streaks[name] = streaks[name] + 1 if dead else 0
+                if streaks[name] >= stop_after_dead_cases:
+                    raise QuotaExhausted(
+                        f"{name}: every agent failed on {streaks[name]} consecutive cases "
+                        f"(last: {case.case_id}); stopped to protect quota. "
+                        "Resume with --redo-failed."
+                    )
+    except QuotaExhausted as exc:
+        stopped = str(exc)
+        # Cases that died are not results: forget them so the report only holds real runs.
+        for records in predictions.values():
+            for case_id in [
+                cid
+                for cid, rec in records.items()
+                if rec.agent_runs and all(r.status != "success" for r in rec.agent_runs)
+            ]:
+                del records[case_id]
+        if checkpoint:
+            _save_checkpoint(checkpoint, predictions)
+        cases = [c for c in cases if all(c.case_id in predictions[n] for n in strategies)]
     reports: list[StrategyMetrics] = []
     adjudication: dict[str, list[Finding]] = {}
     for name in strategies:
@@ -490,8 +519,10 @@ async def evaluate(
         environment=environment or {},
         false_positive_adjudication=adjudication,
         ground_truth=subset,
-        run_config=run_config or {},
-        predictions={name: predictions[name] for name in strategies},
+        run_config={**(run_config or {}), **({"stopped_early": stopped} if stopped else {})},
+        predictions={
+            name: {c.case_id: predictions[name][c.case_id] for c in cases} for name in strategies
+        },
     )
 
 
@@ -643,6 +674,15 @@ def main() -> None:
     )
     parser.add_argument("--limit", type=int, help="evaluate only the first N cases")
     parser.add_argument(
+        "--splits-first",
+        help="comma-separated split order, e.g. test,dev: run those splits first, in that order",
+    )
+    parser.add_argument(
+        "--per-repo",
+        type=int,
+        help="evaluate only the first N cases of every repository (quota-limited runs)",
+    )
+    parser.add_argument(
         "--case-delay", type=float, default=0.0, help="seconds between cases (rate limits)"
     )
     parser.add_argument(
@@ -687,6 +727,11 @@ def main() -> None:
         if name not in strategies
     }
     cases = load_jsonl(args.corpus)
+    if args.per_repo:
+        cases = limit_per_repo(cases, args.per_repo)
+    if args.splits_first:
+        order = {name.strip(): i for i, name in enumerate(args.splits_first.split(","))}
+        cases = sorted(cases, key=lambda c: order.get(c.metadata.get("split"), len(order)))
     if args.limit:
         cases = cases[: args.limit]
     verifier = None

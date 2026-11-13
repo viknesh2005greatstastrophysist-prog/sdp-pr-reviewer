@@ -517,7 +517,7 @@ def test_quota_detection_survives_list_shaped_error_bodies():
 
 
 def test_redo_failed_drops_only_failed_records_and_dead_streak_stops_the_run(tmp_path):
-    from pr_reviewer.evaluation import QuotaExhausted, drop_failed_records, evaluate
+    from pr_reviewer.evaluation import drop_failed_records, evaluate
 
     good = CaseRecord(
         agent_runs=[AgentRun(agent="a", status="success", duration_ms=1, finding_count=0)]
@@ -535,6 +535,24 @@ def test_redo_failed_drops_only_failed_records_and_dead_streak_stops_the_run(tmp
 
     cases = [EvaluationCase(case_id=str(i), diff="") for i in range(5)]
     checkpoint = tmp_path / "ck.json"
-    with pytest.raises(QuotaExhausted):
-        asyncio.run(evaluate(cases, {"dead": Dead()}, checkpoint=checkpoint))
-    assert len(json.loads(checkpoint.read_text())["dead"]) == 2  # stopped after two dead cases
+    report = asyncio.run(evaluate(cases, {"dead": Dead()}, checkpoint=checkpoint))
+    assert "stopped_early" in report.run_config and report.corpus_cases == 0
+    assert json.loads(checkpoint.read_text())["dead"] == {}  # dead cases are not results
+
+
+def test_evaluation_is_case_major_so_an_early_stop_leaves_complete_cases():
+    order = []
+
+    class Recorder:
+        def __init__(self, name):
+            self.name = name
+
+        async def __call__(self, case):
+            order.append((case.case_id, self.name))
+            return make_result([], {"a": "success"})
+
+    cases = [EvaluationCase(case_id=str(i), diff="") for i in range(2)]
+    from pr_reviewer.evaluation import evaluate
+
+    asyncio.run(evaluate(cases, {"s1": Recorder("s1"), "s2": Recorder("s2")}))
+    assert order == [("0", "s1"), ("0", "s2"), ("1", "s1"), ("1", "s2")]
