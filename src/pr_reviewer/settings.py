@@ -23,6 +23,14 @@ def parse_demo_accounts(raw: str | None) -> tuple[tuple[str, str], ...]:
     return tuple(accounts)
 
 
+def parse_review_mode(raw: str | None) -> str:
+    """REVIEW_MODE is "focused" (default) or "full"; anything else is a configuration error."""
+    value = (raw or "").strip().casefold() or "focused"
+    if value not in {"focused", "full"}:
+        raise ValueError(f"REVIEW_MODE must be 'focused' or 'full', got {raw!r}")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     github_token: str | None = None
@@ -47,6 +55,12 @@ class Settings:
     webhook_auto_publish: bool = False
     review_concurrency: int = 2
     min_confidence: float = 0.0
+    # "focused" hides cosmetic static findings and weak agent findings; "full" shows everything.
+    review_mode: str = "focused"
+    # Focused mode extras: one LLM call per review that drops ungrounded agent findings, and a
+    # cap on findings per pull request (0 = no cap).
+    review_verify: bool = True
+    review_top_k: int = 0
     # username -> "pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64>" (see pr-reviewer-hash-password)
     demo_accounts: tuple[tuple[str, str], ...] = ()
 
@@ -103,5 +117,9 @@ class Settings:
             webhook_auto_publish=enabled("WEBHOOK_AUTO_PUBLISH"),
             review_concurrency=max(1, int(text("REVIEW_CONCURRENCY") or cls.review_concurrency)),
             min_confidence=min(1.0, max(0.0, float(text("MIN_CONFIDENCE") or 0.0))),
+            review_mode=parse_review_mode(os.getenv("REVIEW_MODE")),
+            review_verify=os.getenv("REVIEW_VERIFY", "true").strip().casefold()
+            not in {"0", "false", "no", "off"},
+            review_top_k=max(0, int(text("REVIEW_TOP_K") or 0)),
             demo_accounts=parse_demo_accounts(os.getenv("DEMO_ACCOUNTS")),
         )

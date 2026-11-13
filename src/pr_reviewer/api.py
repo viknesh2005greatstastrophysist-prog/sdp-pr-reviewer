@@ -222,6 +222,7 @@ def dashboard_status():
         "publishing_enabled": config.publish_reviews,
         "webhook_auto_publish": config.publish_reviews and config.webhook_auto_publish,
         "min_confidence": config.min_confidence,
+        "review_mode": config.review_mode,
         "review_concurrency": config.review_concurrency,
         "database": "postgresql" if config.database_url.startswith("postgresql") else "sqlite",
         "analyzers": {

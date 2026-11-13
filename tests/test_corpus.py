@@ -187,6 +187,7 @@ def test_build_corpus_end_to_end_with_mock_transport(tmp_path):
             repos_dir=tmp_path,
             transport=httpx.MockTransport(_handler(rate_limit_once=True)),
             sleep=fake_sleep,
+            min_findings=1,
         )
     )
     assert slept, "403 with x-ratelimit-remaining=0 must trigger a sleep"

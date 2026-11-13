@@ -35,6 +35,17 @@ class ReviewService:
         )
         return [LLMReviewAgent(category, client) for category in SPECIALIZATIONS]
 
+    def verifier(self) -> OpenAICompatibleClient | None:
+        """Client for the verification pass (focused mode with an LLM configured)."""
+        if not (self.settings.llm_api_key and self.settings.review_verify):
+            return None
+        return OpenAICompatibleClient(
+            api_key=self.settings.llm_api_key,
+            model=self.settings.llm_model,
+            base_url=self.settings.llm_base_url,
+            timeout=self.settings.agent_timeout,
+        )
+
     async def review_pull_request(
         self, ref: PullRequestRef, publish: bool | None = None, requested_by: str | None = None
     ) -> ReviewResult:
@@ -59,6 +70,8 @@ class ReviewService:
                 self.agents(),
                 agent_timeout=self.settings.agent_timeout,
                 min_confidence=self.settings.min_confidence,
+                review_mode=self.settings.review_mode,
+                verifier=self.verifier(),
             )
         result.head_sha = ref.head_sha
         result.warnings.extend(materialize_warnings)

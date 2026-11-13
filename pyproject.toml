@@ -33,6 +33,8 @@ pr-reviewer = "pr_reviewer.cli:main"
 pr-reviewer-evaluate = "pr_reviewer.evaluation:main"
 pr-reviewer-hash-password = "pr_reviewer.cli_auth:main"
 pr-reviewer-build-corpus = "pr_reviewer.corpus:main"
+pr-reviewer-label-corpus = "pr_reviewer.labeling:main"
+pr-reviewer-score = "pr_reviewer.scoring:main"
 
 [build-system]
 requires = ["setuptools>=69"]

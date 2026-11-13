@@ -262,11 +262,34 @@ async def run_agent(
         return [], run, message
 
 
+async def dispatch_runs(
+    files: list[DiffFile],
+    agents: list[BaseReviewAgent],
+    timeout: float = 45,
+    *,
+    sequential: bool = False,
+    delay: float = 0.0,
+) -> tuple[list[Finding], list[str], list[AgentRun]]:
+    """Run agents concurrently, or one at a time (rate-limited providers), keeping run records."""
+    if sequential:
+        results = []
+        for index, agent in enumerate(agents):
+            if delay and index:
+                await asyncio.sleep(delay)
+            results.append(await run_agent(agent, files, timeout))
+    else:
+        results = list(
+            await asyncio.gather(*(run_agent(agent, files, timeout) for agent in agents))
+        )
+    findings = [finding for batch, _, _ in results for finding in batch]
+    warnings = [warning for _, _, warning in results if warning]
+    runs = [run for _, run, _ in results]
+    return findings, warnings, runs
+
+
 async def dispatch(
     files: list[DiffFile], agents: list[BaseReviewAgent] | None = None, timeout: float = 45
 ):
     selected = agents if agents is not None else [OfflineAgent(name) for name in CATEGORIES]
-    results = await asyncio.gather(*(run_agent(agent, files, timeout) for agent in selected))
-    findings = [finding for batch, _, _ in results for finding in batch]
-    warnings = [warning for _, _, warning in results if warning]
+    findings, warnings, _ = await dispatch_runs(files, selected, timeout)
     return findings, warnings

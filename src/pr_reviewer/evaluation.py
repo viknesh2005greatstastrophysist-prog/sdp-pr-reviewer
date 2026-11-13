@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import json
 import platform
 import shutil
 import subprocess
@@ -14,10 +15,14 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .agents import SPECIALIZATIONS, LLMReviewAgent
+from .aggregator import aggregate
 from .llm import OpenAICompatibleClient
-from .models import Finding, ReviewResult
+from .models import AgentRun, Finding, ReviewResult
+from .parser import parse_diff
 from .pipeline import review_diff
 from .settings import Settings
+from .verifier import PROMPT_VERSION as VERIFIER_PROMPT_VERSION
+from .verifier import verify_findings
 
 
 class EvaluationCase(BaseModel):
@@ -26,6 +31,21 @@ class EvaluationCase(BaseModel):
     human_findings: list[Finding] = Field(default_factory=list)
     repo_path: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CaseRecord(BaseModel):
+    """What one strategy produced for one case (the raw material for every table)."""
+
+    findings: list[Finding] = Field(default_factory=list)
+    agent_runs: list[AgentRun] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    latency_ms: float = 0.0
+    passes: int = 1
+    initial_failures: int = 0
+    # Verification pass (one call per case): finding_key -> grounded. Empty if not run.
+    verified: bool = False
+    verdicts: dict[str, bool] = Field(default_factory=dict)
+    verify_error: str | None = None
 
 
 class PolicyMetrics(BaseModel):
@@ -55,8 +75,15 @@ class StrategyMetrics(BaseModel):
     agent_runs: int = 0
     agent_failures: int = 0
     cases_with_agent_failure: int = 0
+    # Failures seen on the first pass, before per-case retries (agent_failures is after).
+    initial_agent_failures: int = 0
+    cases_retried: int = 0
     # The flat counts above use the "category" policy; the same run under the other policy:
     location_only: PolicyMetrics | None = None
+    # Finding and human comment inside the same diff hunk (a coarser, "right neighbourhood" test).
+    hunk_level: PolicyMetrics | None = None
+    # Micro precision of the top-k findings of each PR under the location-only policy.
+    precision_at_k: dict[str, float] = Field(default_factory=dict)
     per_category: dict[str, PolicyMetrics] = Field(default_factory=dict)
 
 
@@ -69,6 +96,11 @@ class EvaluationReport(BaseModel):
     strategies_not_run: dict[str, str] = Field(default_factory=dict)
     environment: dict[str, Any] = Field(default_factory=dict)
     false_positive_adjudication: dict[str, list[Finding]]
+    ground_truth: str = "actionable"
+    run_config: dict[str, Any] = Field(default_factory=dict)
+    # strategy -> case_id -> the exact findings produced (full review mode), so any filtering
+    # or re-scoring can be replayed offline without new LLM calls.
+    predictions: dict[str, dict[str, CaseRecord]] = Field(default_factory=dict)
 
 
 def load_jsonl(path: str | Path) -> list[EvaluationCase]:
@@ -83,6 +115,49 @@ def load_jsonl(path: str | Path) -> list[EvaluationCase]:
     if not cases:
         raise ValueError("Evaluation corpus is empty; metrics will not be fabricated")
     return cases
+
+
+def ground_truth(case: EvaluationCase, subset: str = "actionable") -> list[Finding]:
+    """The human comments that count as expected findings.
+
+    "actionable": comments the LLM classifier judged actionable (all comments when the corpus
+    has no labels). "addressed": actionable comments that the PR later dealt with (outdated or
+    line changed). "all": every kept comment.
+    """
+    if subset == "all":
+        return list(case.human_findings)
+    labels = case.metadata.get("finding_labels", [])
+    kept: list[Finding] = []
+    for index, finding in enumerate(case.human_findings):
+        label = labels[index] if index < len(labels) else {}
+        if label.get("actionable", True) is False:
+            continue
+        if subset == "addressed" and not label.get("addressed"):
+            continue
+        kept.append(finding)
+    return kept
+
+
+def hunk_policy(case: EvaluationCase) -> Callable[[Finding, Finding], bool]:
+    """Match when both lines fall inside one diff hunk of the same file."""
+    ranges: dict[str, list[tuple[int, int]]] = {}
+    for item in parse_diff(case.diff):
+        for hunk in item.hunks:
+            end = hunk.new_start + max(hunk.new_count, 1) - 1
+            ranges.setdefault(item.path, []).append((hunk.new_start, end))
+
+    def same_hunk(predicted: Finding, expected: Finding) -> bool:
+        if predicted.path != expected.path:
+            return False
+        return any(
+            lo <= predicted.line <= hi and lo <= expected.line <= hi
+            for lo, hi in ranges.get(expected.path, [])
+        )
+
+    return same_hunk
+
+
+PRECISION_KS = (1, 3, 5)
 
 
 def location_matches(predicted: Finding, expected: Finding) -> bool:
@@ -144,6 +219,182 @@ def prf(tp: int, fp: int, fn: int) -> PolicyMetrics:
 
 
 Strategy = Callable[[EvaluationCase], Awaitable[ReviewResult]]
+Sleep = Callable[[float], Awaitable[None]]
+
+
+def failed_agents(result: ReviewResult) -> list[str]:
+    return [run.agent for run in result.agent_runs if run.status != "success"]
+
+
+def merge_results(first: ReviewResult, again: ReviewResult) -> ReviewResult:
+    """Combine a first pass with a re-run of only its failed agents.
+
+    Successful runs from the first pass are kept, failed ones are replaced by the re-run, and the
+    findings are aggregated again (static findings repeat identically and collapse).
+    """
+    reran = {run.agent for run in again.agent_runs}
+    runs = [run for run in first.agent_runs if run.agent not in reran] + again.agent_runs
+    findings = aggregate(first.findings + again.findings)
+    return again.model_copy(
+        update={
+            "findings": findings,
+            "agent_runs": runs,
+            "warnings": list(dict.fromkeys(first.warnings + again.warnings)),
+        }
+    )
+
+
+async def run_case(
+    strategy: Strategy,
+    case: EvaluationCase,
+    *,
+    max_passes: int = 1,
+    retry_wait: float = 30.0,
+    sleep: Sleep = asyncio.sleep,
+) -> CaseRecord:
+    """Run one case; re-run only the agents that failed (up to `max_passes` passes in total).
+
+    Waits between passes grow (retry_wait, 3x, 9x ...) so a per-minute quota can recover.
+    Only time spent inside the strategy counts as latency, not the waits.
+    """
+    started = time.perf_counter()
+    result = await strategy(case)
+    elapsed = time.perf_counter() - started
+    initial = len(failed_agents(result))
+    passes = 1
+    rerun = getattr(strategy, "rerun", None)
+    while passes < max_passes and rerun is not None and (names := failed_agents(result)):
+        await sleep(retry_wait * 3 ** (passes - 1))
+        started = time.perf_counter()
+        again = await rerun(case, names)
+        elapsed += time.perf_counter() - started
+        result = merge_results(result, again)
+        passes += 1
+    return CaseRecord(
+        findings=result.findings,
+        agent_runs=result.agent_runs,
+        warnings=result.warnings,
+        latency_ms=elapsed * 1000,
+        passes=passes,
+        initial_failures=initial,
+    )
+
+
+def metrics_from_records(
+    name: str,
+    cases: list[EvaluationCase],
+    records: dict[str, CaseRecord],
+    *,
+    subset: str = "actionable",
+    transform: Callable[[list[Finding]], list[Finding]] | None = None,
+) -> tuple[StrategyMetrics, list[Finding]]:
+    """Score saved predictions. `transform` (e.g. the focused review mode) is applied per case
+    before matching. Also returns the false positives (category policy) for adjudication."""
+    tp = fp = fn = 0
+    loc = [0, 0, 0]
+    hunk = [0, 0, 0]
+    at_k = {k: [0, 0] for k in PRECISION_KS}  # hits, returned
+    by_category: dict[str, list[int]] = {}
+    elapsed = 0.0
+    false_positives: list[Finding] = []
+    runs = failures = failed_cases = initial = retried = 0
+    for case in cases:
+        record = records[case.case_id]
+        findings = transform(record.findings) if transform else record.findings
+        expected = ground_truth(case, subset)
+        elapsed += record.latency_ms / 1000
+        case_failures = sum(run.status != "success" for run in record.agent_runs)
+        runs += len(record.agent_runs)
+        failures += case_failures
+        failed_cases += bool(case_failures)
+        initial += record.initial_failures
+        retried += record.passes > 1
+        matched, false_pos, missed = match_detail(findings, expected)
+        tp += len(matched)
+        fp += len(false_pos)
+        fn += len(missed)
+        false_positives.extend(false_pos)
+        for group, index in ((matched, 0), (false_pos, 1), (missed, 2)):
+            for item in group:
+                by_category.setdefault(item.category, [0, 0, 0])[index] += 1
+        l_matched, l_false, l_missed = match_detail(findings, expected, location_matches)
+        loc[0] += len(l_matched)
+        loc[1] += len(l_false)
+        loc[2] += len(l_missed)
+        h_matched, h_false, h_missed = match_detail(findings, expected, hunk_policy(case))
+        hunk[0] += len(h_matched)
+        hunk[1] += len(h_false)
+        hunk[2] += len(h_missed)
+        for k in PRECISION_KS:
+            top = findings[:k]
+            at_k[k][0] += len(match_detail(top, expected, location_matches)[0])
+            at_k[k][1] += len(top)
+    overall = prf(tp, fp, fn)
+    metrics = StrategyMetrics(
+        strategy=name,
+        cases=len(cases),
+        true_positives=tp,
+        false_positives=fp,
+        false_negatives=fn,
+        precision=overall.precision,
+        recall=overall.recall,
+        f1=overall.f1,
+        mean_latency_ms=elapsed * 1000 / len(cases) if cases else 0.0,
+        location_only=prf(*loc),
+        hunk_level=prf(*hunk),
+        precision_at_k={
+            f"p@{k}": (hits / returned if returned else 0.0) for k, (hits, returned) in at_k.items()
+        },
+        per_category={key: prf(*by_category[key]) for key in sorted(by_category)},
+        agent_runs=runs,
+        agent_failures=failures,
+        cases_with_agent_failure=failed_cases,
+        initial_agent_failures=initial,
+        cases_retried=retried,
+    )
+    return metrics, false_positives
+
+
+def _save_checkpoint(path: Path, predictions: dict[str, dict[str, CaseRecord]]) -> None:
+    payload = {
+        name: {case_id: rec.model_dump(mode="json") for case_id, rec in records.items()}
+        for name, records in predictions.items()
+    }
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _load_checkpoint(path: Path) -> dict[str, dict[str, CaseRecord]]:
+    if not path.exists():
+        return {}
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        name: {case_id: CaseRecord.model_validate(rec) for case_id, rec in records.items()}
+        for name, records in raw.items()
+    }
+
+
+async def verify_record(
+    client: OpenAICompatibleClient,
+    case: EvaluationCase,
+    record: CaseRecord,
+    *,
+    passes: int = 3,
+    wait: float = 30.0,
+    sleep: Sleep = asyncio.sleep,
+) -> None:
+    """Run the verification pass on a case's full prediction and store the verdicts."""
+    files = parse_diff(case.diff)
+    for attempt in range(passes):
+        outcome = await verify_findings(client, files, record.findings)
+        if outcome.error is None:
+            record.verdicts, record.verify_error, record.verified = outcome.verdicts, None, True
+            return
+        record.verify_error = outcome.error
+        if attempt + 1 < passes:
+            await sleep(wait * 3**attempt)
+    record.verified = True  # attempted; verify_error says it failed (findings stay unverified)
 
 
 async def evaluate(
@@ -154,62 +405,47 @@ async def evaluate(
     environment: dict[str, Any] | None = None,
     case_delay: float = 0.0,
     usage: dict[str, tuple[int, int]] | None = None,
+    max_passes: int = 1,
+    retry_wait: float = 30.0,
+    sleep: Sleep = asyncio.sleep,
+    subset: str = "actionable",
+    run_config: dict[str, Any] | None = None,
+    checkpoint: Path | None = None,
+    verifier: OpenAICompatibleClient | None = None,
+    verify_passes: int = 3,
 ) -> EvaluationReport:
+    predictions = _load_checkpoint(checkpoint) if checkpoint else {}
+    for name, strategy in strategies.items():
+        records = predictions.setdefault(name, {})
+        first = True
+        wants_verify = verifier is not None and hasattr(strategy, "rerun")
+        for case in cases:
+            done = records.get(case.case_id)
+            if done is not None and (done.verified or not wants_verify):
+                continue  # resumed from the checkpoint
+            if case_delay and not first:
+                await sleep(case_delay)
+            first = False
+            if done is None:
+                done = records[case.case_id] = await run_case(
+                    strategy, case, max_passes=max_passes, retry_wait=retry_wait, sleep=sleep
+                )
+            if wants_verify:
+                await verify_record(
+                    verifier, case, done, passes=verify_passes, wait=retry_wait, sleep=sleep
+                )
+            if checkpoint:
+                _save_checkpoint(checkpoint, predictions)
     reports: list[StrategyMetrics] = []
     adjudication: dict[str, list[Finding]] = {}
-    for name, strategy in strategies.items():
-        tp = fp = fn = 0
-        loc = [0, 0, 0]
-        by_category: dict[str, list[int]] = {}
-        elapsed = 0.0
-        strategy_false_positives: list[Finding] = []
-        runs = failures = failed_cases = 0
-        for index, case in enumerate(cases):
-            if case_delay and index:
-                await asyncio.sleep(case_delay)
-            started = time.perf_counter()
-            result = await strategy(case)
-            elapsed += time.perf_counter() - started
-            case_failures = sum(run.status != "success" for run in result.agent_runs)
-            runs += len(result.agent_runs)
-            failures += case_failures
-            failed_cases += bool(case_failures)
-            matched, false_pos, missed = match_detail(result.findings, case.human_findings)
-            tp += len(matched)
-            fp += len(false_pos)
-            fn += len(missed)
-            strategy_false_positives.extend(false_pos)
-            for group, index in ((matched, 0), (false_pos, 1), (missed, 2)):
-                for item in group:
-                    by_category.setdefault(item.category, [0, 0, 0])[index] += 1
-            l_matched, l_false, l_missed = match_detail(
-                result.findings, case.human_findings, location_matches
-            )
-            loc[0] += len(l_matched)
-            loc[1] += len(l_false)
-            loc[2] += len(l_missed)
-        overall = prf(tp, fp, fn)
-        reports.append(
-            StrategyMetrics(
-                strategy=name,
-                cases=len(cases),
-                true_positives=tp,
-                false_positives=fp,
-                false_negatives=fn,
-                precision=overall.precision,
-                recall=overall.recall,
-                f1=overall.f1,
-                mean_latency_ms=elapsed * 1000 / len(cases),
-                location_only=prf(*loc),
-                per_category={key: prf(*by_category[key]) for key in sorted(by_category)},
-                agent_runs=runs,
-                agent_failures=failures,
-                cases_with_agent_failure=failed_cases,
-                prompt_tokens=(usage if usage is not None else {}).get(name, (None, None))[0],
-                completion_tokens=(usage if usage is not None else {}).get(name, (None, None))[1],
-            )
+    for name in strategies:
+        metrics, false_positives = metrics_from_records(
+            name, cases, predictions[name], subset=subset
         )
-        adjudication[name] = strategy_false_positives
+        token_usage = (usage if usage is not None else {}).get(name, (None, None))
+        metrics.prompt_tokens, metrics.completion_tokens = token_usage
+        reports.append(metrics)
+        adjudication[name] = false_positives
     return EvaluationReport(
         corpus_cases=len(cases),
         generated_at_epoch=int(time.time()),
@@ -219,6 +455,9 @@ async def evaluate(
         strategies_not_run=not_run or {},
         environment=environment or {},
         false_positive_adjudication=adjudication,
+        ground_truth=subset,
+        run_config=run_config or {},
+        predictions={name: predictions[name] for name in strategies},
     )
 
 
@@ -268,17 +507,67 @@ def collect_environment(config: Settings, corpus: Path) -> dict[str, Any]:
     }
 
 
-def build_strategies(config: Settings) -> dict[str, Strategy]:
-    async def static_only(case: EvaluationCase) -> ReviewResult:
-        return await review_diff(case.diff, case.repo_path, agents=[])
+class StaticStrategy:
+    async def __call__(self, case: EvaluationCase) -> ReviewResult:
+        return await review_diff(case.diff, case.repo_path, agents=[], review_mode="full")
 
-    strategies: dict[str, Strategy] = {"static-only": static_only}
+
+class AgentStrategy:
+    """Runs agents on a case in full review mode (focusing is replayed offline).
+
+    `rerun` repeats only the named agents, which is what per-case retry needs.
+    """
+
+    def __init__(
+        self,
+        agents: list[LLMReviewAgent],
+        *,
+        timeout: float,
+        sequential: bool = False,
+        agent_delay: float = 0.0,
+    ):
+        self.agents = agents
+        self.timeout = timeout
+        self.sequential = sequential
+        self.agent_delay = agent_delay
+
+    async def __call__(self, case: EvaluationCase, only: set[str] | None = None) -> ReviewResult:
+        chosen = [a for a in self.agents if only is None or a.category in only]
+        return await review_diff(
+            case.diff,
+            case.repo_path,
+            chosen,
+            agent_timeout=self.timeout,
+            review_mode="full",
+            sequential_agents=self.sequential,
+            agent_delay=self.agent_delay,
+        )
+
+    async def rerun(self, case: EvaluationCase, names: list[str]) -> ReviewResult:
+        return await self(case, only=set(names))
+
+
+def build_strategies(
+    config: Settings,
+    *,
+    sequential: bool = False,
+    agent_delay: float = 0.0,
+    agent_timeout: float | None = None,
+) -> dict[str, Strategy]:
+    timeout = agent_timeout or config.agent_timeout
+    strategies: dict[str, Strategy] = {"static-only": StaticStrategy()}
     if config.llm_api_key:
         single_client = OpenAICompatibleClient(
-            api_key=config.llm_api_key, model=config.llm_model, base_url=config.llm_base_url
+            api_key=config.llm_api_key,
+            model=config.llm_model,
+            base_url=config.llm_base_url,
+            timeout=timeout,
         )
         hybrid_client = OpenAICompatibleClient(
-            api_key=config.llm_api_key, model=config.llm_model, base_url=config.llm_base_url
+            api_key=config.llm_api_key,
+            model=config.llm_model,
+            base_url=config.llm_base_url,
+            timeout=timeout,
         )
         generalist = LLMReviewAgent(
             "generalist",
@@ -289,18 +578,10 @@ def build_strategies(config: Settings) -> dict[str, Strategy]:
             ),
         )
         specialists = [LLMReviewAgent(category, hybrid_client) for category in SPECIALIZATIONS]
-
-        async def single_agent(case: EvaluationCase) -> ReviewResult:
-            return await review_diff(
-                case.diff, case.repo_path, [generalist], agent_timeout=config.agent_timeout
-            )
-
-        async def hybrid(case: EvaluationCase) -> ReviewResult:
-            return await review_diff(
-                case.diff, case.repo_path, specialists, agent_timeout=config.agent_timeout
-            )
-
-        strategies.update({"single-agent": single_agent, "hybrid-multi-agent": hybrid})
+        strategies["single-agent"] = AgentStrategy([generalist], timeout=timeout)
+        strategies["hybrid-multi-agent"] = AgentStrategy(
+            specialists, timeout=timeout, sequential=sequential, agent_delay=agent_delay
+        )
         TOKEN_CLIENTS.update({"single-agent": single_client, "hybrid-multi-agent": hybrid_client})
     return strategies
 
@@ -330,9 +611,34 @@ def main() -> None:
     parser.add_argument(
         "--case-delay", type=float, default=0.0, help="seconds between cases (rate limits)"
     )
+    parser.add_argument(
+        "--sequential-agents",
+        action="store_true",
+        help="run the specialists one after another within a case (rate-limited providers)",
+    )
+    parser.add_argument("--agent-delay", type=float, default=0.0, help="seconds between agents")
+    parser.add_argument("--agent-timeout", type=float, help="seconds per agent (default: settings)")
+    parser.add_argument(
+        "--max-passes", type=int, default=3, help="passes per case; failed agents are re-run"
+    )
+    parser.add_argument(
+        "--retry-wait", type=float, default=30.0, help="wait before the first re-run (x3 each)"
+    )
+    parser.add_argument(
+        "--no-verify", action="store_true", help="skip the verification pass (one call per case)"
+    )
+    parser.add_argument("--checkpoint", type=Path, help="resume file; finished cases are kept")
+    parser.add_argument(
+        "--subset", choices=("actionable", "addressed", "all"), default="actionable"
+    )
     args = parser.parse_args()
     config = Settings.from_env()
-    strategies = build_strategies(config)
+    strategies = build_strategies(
+        config,
+        sequential=args.sequential_agents,
+        agent_delay=args.agent_delay,
+        agent_timeout=args.agent_timeout,
+    )
     if args.strategies:
         wanted = {item.strip() for item in args.strategies.split(",") if item.strip()}
         strategies = {name: run for name, run in strategies.items() if name in wanted}
@@ -344,6 +650,14 @@ def main() -> None:
     cases = load_jsonl(args.corpus)
     if args.limit:
         cases = cases[: args.limit]
+    verifier = None
+    if config.llm_api_key and not args.no_verify:
+        verifier = OpenAICompatibleClient(
+            api_key=config.llm_api_key,
+            model=config.llm_model,
+            base_url=config.llm_base_url,
+            timeout=args.agent_timeout or config.agent_timeout,
+        )
     report = asyncio.run(
         evaluate(
             cases,
@@ -352,8 +666,29 @@ def main() -> None:
             environment=collect_environment(config, args.corpus),
             case_delay=args.case_delay,
             usage=_LiveUsage(),
+            max_passes=max(1, args.max_passes),
+            retry_wait=args.retry_wait,
+            subset=args.subset,
+            checkpoint=args.checkpoint,
+            verifier=verifier,
+            run_config={
+                "case_delay_s": args.case_delay,
+                "sequential_agents": args.sequential_agents,
+                "agent_delay_s": args.agent_delay,
+                "agent_timeout_s": args.agent_timeout or config.agent_timeout,
+                "max_passes": max(1, args.max_passes),
+                "retry_wait_s": args.retry_wait,
+                "review_mode_for_predictions": "full",
+            },
         )
     )
+    if verifier is not None:
+        report.environment["verifier_tokens"] = {
+            "prompt": verifier.prompt_tokens,
+            "completion": verifier.completion_tokens,
+            "model": verifier.model,
+            "prompt_version": VERIFIER_PROMPT_VERSION,
+        }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     print(f"Wrote evaluation for {report.corpus_cases} case(s) to {args.output}")

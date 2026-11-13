@@ -84,6 +84,7 @@ def run_review(min_confidence, findings):
             agents=[StubAgent(findings)],
             use_langgraph=False,
             min_confidence=min_confidence,
+            review_mode="full",
         )
     )
 

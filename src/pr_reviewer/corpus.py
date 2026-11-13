@@ -1,9 +1,11 @@
 """Build an evaluation corpus from human inline review comments on merged public PRs.
 
 Ground truth here is weak by design: a human review comment on an added line is treated as
-"a reviewer thought this line deserved attention". Categories are assigned by the transparent
-keyword heuristic below, NOT by human labelling; every finding is tagged accordingly in the
-case metadata (label_source = "heuristic-category").
+"a reviewer thought this line deserved attention". At build time categories come from the
+transparent keyword heuristic below (label_source = "heuristic-category"); the separate
+labelling step (pr_reviewer.labeling) then adds an LLM actionable/category judgement. Neither is
+a human label. Each comment also records whether it was later ADDRESSED (outdated, or the line
+was changed by a later commit), which is independent evidence that it was actionable.
 
 Repository code is fetched as data through the contents API and is never executed.
 """
@@ -38,7 +40,18 @@ DEFAULT_REPOS = (
     "pydantic/pydantic",
     "fastapi/fastapi",
     "python-poetry/poetry",
+    "pallets/click",
+    "encode/starlette",
+    "pytest-dev/pytest",
+    "tiangolo/sqlmodel",
+    "pallets/werkzeug",
+    "pallets/jinja",
+    "aio-libs/aiohttp",
+    "psf/black",
 )
+SPLIT_SEED = "sdp-pr-reviewer-split-v1"
+COMMENT_TEXT_CHARS = 2000
+MIN_FINDINGS_PER_CASE = 2
 MAX_DIFF_BYTES = 200_000
 MAX_PY_FILES = 25
 MAX_FILE_BYTES = 1_000_000
@@ -237,6 +250,54 @@ def keep_added_line_comments(comments: list[dict[str, Any]], diff: str) -> list[
     return [c for c in comments if comment_line(c) in added.get(c["path"], set())]
 
 
+def split_repos(repos: list[str], seed: str = SPLIT_SEED) -> dict[str, str]:
+    """Assign whole repositories to "dev" or "test" (about half each).
+
+    The order is a seeded hash of the repository name, so the split is reproducible and cannot
+    depend on how any strategy scores on a repository. Splitting by repository (not by case)
+    keeps one project's idioms from leaking between the tuning and the reporting data.
+    """
+    ranked = sorted(
+        set(repos), key=lambda name: hashlib.sha256(f"{seed}:{name}".encode()).hexdigest()
+    )
+    cut = (len(ranked) + 1) // 2
+    return {name: ("dev" if index < cut else "test") for index, name in enumerate(ranked)}
+
+
+def is_outdated(comment: dict[str, Any]) -> bool:
+    """GitHub nulls `line` once the commented code is no longer in the PR's latest diff."""
+    return comment.get("line") is None and comment.get("original_line") is not None
+
+
+def changed_later_lines(later_diff: str) -> dict[str, set[int]]:
+    """Lines (old-side numbering, per path) that a later commit deleted or rewrote."""
+    removed: dict[str, set[int]] = {}
+    for item in parse_diff(later_diff):
+        deleted = {line.old_line for line in item.lines if line.kind == "DELETE" and line.old_line}
+        removed.setdefault(item.path, set()).update(deleted)
+        if item.old_path:
+            removed.setdefault(item.old_path, set()).update(deleted)
+    return removed
+
+
+def addressed_evidence(comment: dict[str, Any], removed: dict[str, set[int]] | None) -> dict:
+    """Did the PR later deal with this comment?
+
+    outdated: GitHub marked it outdated (can also happen after a force-push or rebase, so it
+    is evidence, not proof). changed_later: a commit after the one the comment was written on
+    deleted or rewrote exactly that line (None when the later diff was unavailable).
+    """
+    outdated = is_outdated(comment)
+    changed = (
+        None if removed is None else comment_line(comment) in removed.get(comment["path"], set())
+    )
+    return {
+        "outdated": outdated,
+        "changed_later": changed,
+        "addressed": bool(outdated or changed),
+    }
+
+
 def comment_to_finding(comment: dict[str, Any]) -> Finding:
     body = comment["body"].strip()
     return Finding(
@@ -360,8 +421,35 @@ async def materialize(
     return written
 
 
+async def _later_changes(
+    fetcher: GitHubFetcher, owner: str, repo: str, commit: str, head: dict[str, Any]
+) -> dict[str, set[int]] | None:
+    """Old-side lines changed between the commented commit and the PR head, or None if unknown."""
+    head_sha = head.get("sha")
+    if not head_sha:
+        return None
+    if head_sha == commit:
+        return {}
+    response = await fetcher.get(
+        f"/repos/{owner}/{repo}/compare/{commit}...{head_sha}", accept=DIFF_ACCEPT
+    )
+    if response.status_code != 200 or len(response.content) > 4 * MAX_DIFF_BYTES:
+        return None
+    try:
+        return changed_later_lines(python_only_diff(response.text))
+    except ValueError:
+        return None
+
+
 async def build_case(
-    fetcher: GitHubFetcher, owner: str, repo: str, pr: dict[str, Any], repos_dir: Path
+    fetcher: GitHubFetcher,
+    owner: str,
+    repo: str,
+    pr: dict[str, Any],
+    repos_dir: Path,
+    *,
+    min_findings: int = MIN_FINDINGS_PER_CASE,
+    split: str | None = None,
 ) -> EvaluationCase | None:
     number = pr["number"]
     author = (pr.get("user") or {}).get("login")
@@ -383,7 +471,7 @@ async def build_case(
             files = parse_diff(diff)
         except ValueError:
             continue
-        if not usable:
+        if len(usable) < min_findings:
             continue
         changed = [f.path for f in files if f.status != "deleted"]
         if len(changed) > MAX_PY_FILES:
@@ -392,8 +480,9 @@ async def build_case(
         destination = repos_dir / case_id
         written = await materialize(fetcher, owner, repo, commit, changed, destination)
         usable = [c for c in usable if c["path"] in written]
-        if not usable:
+        if len(usable) < min_findings:
             continue
+        removed = await _later_changes(fetcher, owner, repo, commit, (pr.get("head") or {}))
         findings = [comment_to_finding(c) for c in usable]
         return EvaluationCase(
             case_id=case_id,
@@ -406,11 +495,16 @@ async def build_case(
                 "pr_url": pr.get("html_url") or f"https://github.com/{owner}/{repo}/pull/{number}",
                 "commit_sha": commit,
                 "base_sha": base_sha,
+                "head_sha": (pr.get("head") or {}).get("sha"),
+                "split": split,
                 "finding_labels": [
                     {
                         "label_source": LABEL_SOURCE,
                         "comment_id": c.get("id"),
                         "comment_url": c.get("html_url"),
+                        "comment_text": c["body"].strip()[:COMMENT_TEXT_CHARS],
+                        "heuristic_category": classify_comment(c["body"]),
+                        **addressed_evidence(c, removed),
                     }
                     for c in usable
                 ],
@@ -426,6 +520,8 @@ async def build_repo_cases(
     max_prs: int,
     max_cases: int,
     repos_dir: Path,
+    min_findings: int = MIN_FINDINGS_PER_CASE,
+    split: str | None = None,
 ) -> list[EvaluationCase]:
     owner, repo = full_name.split("/", 1)
     cases: list[EvaluationCase] = []
@@ -448,7 +544,9 @@ async def build_repo_cases(
             if not pr.get("merged_at"):
                 continue
             scanned += 1
-            case = await build_case(fetcher, owner, repo, pr, repos_dir)
+            case = await build_case(
+                fetcher, owner, repo, pr, repos_dir, min_findings=min_findings, split=split
+            )
             if case:
                 cases.append(case)
                 print(f"{full_name}: case {case.case_id} ({len(case.human_findings)} findings)")
@@ -468,20 +566,28 @@ async def build_corpus(
     repos_dir: Path,
     transport: httpx.AsyncBaseTransport | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    min_findings: int = MIN_FINDINGS_PER_CASE,
 ) -> list[EvaluationCase]:
     fetcher = GitHubFetcher(token, transport=transport, sleep=sleep)
+    splits = split_repos(repos)
     cases: list[EvaluationCase] = []
-    try:
-        for full_name in repos:
-            cases.extend(
-                await build_repo_cases(
-                    fetcher,
-                    full_name,
-                    max_prs=max_prs,
-                    max_cases=max_cases_per_repo,
-                    repos_dir=repos_dir,
-                )
+    limit = asyncio.Semaphore(4)
+
+    async def one(full_name: str) -> list[EvaluationCase]:
+        async with limit:
+            return await build_repo_cases(
+                fetcher,
+                full_name,
+                max_prs=max_prs,
+                max_cases=max_cases_per_repo,
+                repos_dir=repos_dir,
+                min_findings=min_findings,
+                split=splits[full_name],
             )
+
+    try:
+        for batch in await asyncio.gather(*(one(name) for name in repos)):
+            cases.extend(batch)
     finally:
         await fetcher.aclose()
     return sorted(cases, key=lambda c: (c.metadata["repo"], c.metadata["pr_number"]))
@@ -495,30 +601,53 @@ def write_corpus(cases: list[EvaluationCase], output: Path) -> str:
 
 
 def corpus_card(cases: list[EvaluationCase], sha256: str, built_on: str) -> str:
+    """Markdown card. Works on a raw corpus and on one that the labelling step has enriched."""
     per_repo = Counter(c.metadata["repo"] for c in cases)
-    findings_per_repo = Counter()
-    per_category: Counter[str] = Counter()
+    split_of = {c.metadata["repo"]: c.metadata.get("split") or "-" for c in cases}
+    findings_per_repo: Counter[str] = Counter()
+    labels = [(case, label) for case in cases for label in case.metadata.get("finding_labels", [])]
     for case in cases:
         findings_per_repo[case.metadata["repo"]] += len(case.human_findings)
-        per_category.update(f.category for f in case.human_findings)
+    heuristic = Counter(label.get("heuristic_category", "?") for _, label in labels)
+    labelled = [label for _, label in labels if "actionable" in label]
+    addressed = [label for _, label in labels if label.get("addressed")]
+    split_cases = Counter(c.metadata.get("split") or "-" for c in cases)
+    split_findings: Counter[str] = Counter()
+    for case in cases:
+        split_findings[case.metadata.get("split") or "-"] += len(case.human_findings)
     lines = [
         "# Evaluation corpus card",
         "",
         f"- Built (UTC): {built_on}",
         f"- Corpus SHA-256 (evaluation/corpus.jsonl): `{sha256}`",
-        f"- Cases: {len(cases)}; human-comment findings: {sum(per_category.values())}",
-        "- Source: public merged PRs; inline human review comments on added `.py` lines.",
-        "- Labels: location is human; category is a keyword heuristic "
-        '(`label_source = "heuristic-category"`), not a human label.',
-        "",
-        "| Repo | Cases | Findings |",
-        "| --- | ---: | ---: |",
+        f"- Cases: {len(cases)}; human-comment findings: {sum(findings_per_repo.values())}",
+        "- Source: public merged PRs; inline human review comments on added `.py` lines; "
+        f"every case has at least {MIN_FINDINGS_PER_CASE} kept comments.",
+        f"- Split: whole repositories, seeded hash order (`{SPLIT_SEED}`), first half `dev`, "
+        "second half `test`. Rules and thresholds may be tuned on `dev` only; `test` is "
+        "reported, never tuned on.",
+        "- Location is human. Heuristic category is a keyword label; the LLM classifier "
+        "(see RESULTS.md) adds actionable/category judgements. Neither is a human label.",
+        f"- Comments later addressed (outdated or line changed by a later commit): "
+        f"{len(addressed)} of {sum(findings_per_repo.values())}",
     ]
+    if labelled:
+        actionable = sum(1 for label in labelled if label["actionable"])
+        lines.append(
+            f"- LLM-classified comments: {len(labelled)}; actionable: {actionable} "
+            f"({actionable / len(labelled):.1%})"
+        )
+    lines += ["", "| Repo | Split | Cases | Findings |", "| --- | --- | ---: | ---: |"]
     lines += [
-        f"| {repo} | {per_repo[repo]} | {findings_per_repo[repo]} |" for repo in sorted(per_repo)
+        f"| {repo} | {split_of[repo]} | {per_repo[repo]} | {findings_per_repo[repo]} |"
+        for repo in sorted(per_repo)
+    ]
+    lines += ["", "| Split | Cases | Findings |", "| --- | ---: | ---: |"]
+    lines += [
+        f"| {name} | {split_cases[name]} | {split_findings[name]} |" for name in sorted(split_cases)
     ]
     lines += ["", "| Heuristic category | Findings |", "| --- | ---: |"]
-    lines += [f"| {name} | {per_category[name]} |" for name in sorted(per_category)]
+    lines += [f"| {name} | {heuristic[name]} |" for name in sorted(heuristic)]
     return "\n".join(lines) + "\n"
 
 
@@ -526,7 +655,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build an evaluation corpus from public PRs")
     parser.add_argument("repos", nargs="*", default=list(DEFAULT_REPOS), help="owner/name")
     parser.add_argument("--max-prs", type=int, default=150, help="merged PRs scanned per repo")
-    parser.add_argument("--max-cases-per-repo", type=int, default=7)
+    parser.add_argument("--max-cases-per-repo", type=int, default=9)
+    parser.add_argument("--min-findings", type=int, default=MIN_FINDINGS_PER_CASE)
     parser.add_argument("--output", type=Path, default=Path("evaluation/corpus.jsonl"))
     parser.add_argument("--repos-dir", type=Path, default=Path("evaluation/repos"))
     parser.add_argument("--card", type=Path, default=Path("evaluation/CORPUS.md"))
@@ -541,6 +671,7 @@ def main() -> None:
             max_prs=args.max_prs,
             max_cases_per_repo=args.max_cases_per_repo,
             repos_dir=args.repos_dir,
+            min_findings=args.min_findings,
         )
     )
     if not cases:
