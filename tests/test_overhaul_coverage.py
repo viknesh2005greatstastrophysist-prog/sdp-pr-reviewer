@@ -665,3 +665,39 @@ def test_limit_per_repo_keeps_first_cases_of_each_repository_in_order():
     ]
     kept = evaluation_module.limit_per_repo(cases, 2)
     assert [c.case_id for c in kept] == ["a0", "a1", "b0", "b1"]
+
+
+def test_bootstrap_interval_is_exact_for_constant_cases_and_wide_for_mixed_ones():
+    constant = [(1, 1, 0)] * 6  # every case: one hit, one false alarm
+    ci = scoring.bootstrap_ci(constant)
+    assert ci["n_cases"] == 6 and ci["p"] == [0.5, 0.5] and ci["r"] == [1.0, 1.0]
+    mixed = [(1, 0, 0), (0, 1, 1)] * 3
+    wide = scoring.bootstrap_ci(mixed)
+    assert wide["p"][0] < 0.5 < wide["p"][1] and wide["draws"] == scoring.BOOTSTRAP_DRAWS
+    assert scoring.bootstrap_ci(mixed) == wide  # fixed seed: reproducible
+    assert scoring.bootstrap_ci([]) == {"n_cases": 0}
+
+
+def test_paired_difference_flags_intervals_that_include_zero():
+    better = [(1, 0, 0)] * 8
+    worse = [(0, 1, 1)] * 8
+    clear = scoring.paired_difference(better, worse)
+    assert clear["f1"]["diff"] == 1.0 and clear["f1"]["includes_zero"] is False
+    same = scoring.paired_difference(better, list(better))
+    assert same["f1"]["diff"] == 0 and same["f1"]["includes_zero"] is True
+    noisy_a, noisy_b = [(1, 0, 0), (0, 1, 1)] * 3, [(0, 1, 1), (1, 0, 0)] * 3
+    assert scoring.paired_difference(noisy_a, noisy_b)["f1"]["includes_zero"] is True
+    assert scoring.paired_difference([], [])["n_cases"] == 0
+
+
+def test_score_report_carries_cis_pairs_and_skips_incomplete_cases():
+    cases, report = fixture()
+    cases.append(make_case("never-run", "test", [finding(line=3)]))
+    tables = scoring.score_report(cases, report, CONFIG, verify=False)
+    row = tables["test"]["hybrid (full)"]
+    assert row["cases"] == 2 and row["ci"]["location"]["n_cases"] == 2
+    pair = tables["test"]["_paired"]["hybrid (full) minus static-only"]["location"]
+    assert pair["n_cases"] == 2 and "includes_zero" in pair["f1"]
+    text = scoring.policy_table(tables["test"], "location")
+    assert "[" in text and "never-run" not in text
+    assert "includes 0" in scoring.paired_table(tables["test"])

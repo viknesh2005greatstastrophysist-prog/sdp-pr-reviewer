@@ -22,10 +22,13 @@ from .evaluation import (
     EvaluationCase,
     EvaluationReport,
     ground_truth,
+    hunk_policy,
     load_jsonl,
     location_matches,
     match_detail,
+    matches,
     metrics_from_records,
+    prf,
 )
 from .models import Finding
 from .review_mode import (
@@ -51,8 +54,113 @@ def focus_transform(record: CaseRecord, config: FocusConfig, *, verify: bool):
     return apply_review_mode(findings, "focused", config)[0]
 
 
+BOOTSTRAP_DRAWS = 2000
+BOOTSTRAP_SEED = 20261114
+POLICY_FACTORIES = {
+    "location": lambda case: location_matches,
+    "category": lambda case: matches,
+    "hunk": hunk_policy,
+}
+
+
+def case_counts(
+    cases: list[EvaluationCase],
+    records: dict[str, CaseRecord],
+    policy: str,
+    *,
+    subset: str,
+    transform=None,
+) -> list[tuple[int, int, int]]:
+    """Per-case (tp, fp, fn) under one policy: the unit that the bootstrap resamples."""
+    counts = []
+    for case in cases:
+        record = records[case.case_id]
+        findings = transform(record) if transform else record.findings
+        matched, false_pos, missed = match_detail(
+            findings, ground_truth(case, subset), POLICY_FACTORIES[policy](case)
+        )
+        counts.append((len(matched), len(false_pos), len(missed)))
+    return counts
+
+
+def draw_indices(n: int, draws: int = BOOTSTRAP_DRAWS, seed: int = BOOTSTRAP_SEED):
+    rng = random.Random(seed)  # noqa: S311 - reproducible resampling, not security
+    return [[rng.randrange(n) for _ in range(n)] for _ in range(draws)]
+
+
+def _prf_of(counts, picks) -> tuple[float, float, float]:
+    tp = sum(counts[i][0] for i in picks)
+    fp = sum(counts[i][1] for i in picks)
+    fn = sum(counts[i][2] for i in picks)
+    result = prf(tp, fp, fn)
+    return result.precision, result.recall, result.f1
+
+
+def _interval(values: list[float]) -> list[float]:
+    ordered = sorted(values)
+    return [
+        ordered[int(0.025 * (len(ordered) - 1))],
+        ordered[int(0.975 * (len(ordered) - 1) + 0.5)],
+    ]
+
+
+def bootstrap_ci(counts: list[tuple[int, int, int]], indices=None) -> dict[str, Any]:
+    """95% percentile bootstrap over cases (2000 draws, fixed seed) for micro P/R/F1."""
+    if not counts:
+        return {"n_cases": 0}
+    indices = indices or draw_indices(len(counts))
+    draws = [_prf_of(counts, picks) for picks in indices]
+    return {
+        "n_cases": len(counts),
+        "draws": len(indices),
+        "seed": BOOTSTRAP_SEED,
+        **{
+            name: _interval([d[position] for d in draws])
+            for position, name in enumerate(("p", "r", "f1"))
+        },
+    }
+
+
+def paired_difference(counts_a, counts_b, indices=None) -> dict[str, Any]:
+    """A minus B on the same resampled cases; says whether the interval includes zero."""
+    if not counts_a or len(counts_a) != len(counts_b):
+        return {"n_cases": 0}
+    indices = indices or draw_indices(len(counts_a))
+    point_a, point_b = (
+        _prf_of(counts_a, range(len(counts_a))),
+        _prf_of(counts_b, range(len(counts_b))),
+    )
+    deltas = [
+        [x - y for x, y in zip(_prf_of(counts_a, picks), _prf_of(counts_b, picks), strict=True)]
+        for picks in indices
+    ]
+    out: dict[str, Any] = {"n_cases": len(counts_a), "draws": len(indices)}
+    for position, name in enumerate(("p", "r", "f1")):
+        low, high = _interval([d[position] for d in deltas])
+        out[name] = {
+            "diff": point_a[position] - point_b[position],
+            "ci": [low, high],
+            "includes_zero": low <= 0 <= high,
+        }
+    return out
+
+
+PAIRS = (
+    ("hybrid (full)", "single-agent"),
+    ("hybrid (full)", "static-only"),
+    ("hybrid (focused)", "single-agent (focused)"),
+    ("hybrid (focused)", "static-only (focused)"),
+    ("hybrid (focused)", "hybrid (full)"),
+)
+
+
 def select_cases(cases: list[EvaluationCase], split: str) -> list[EvaluationCase]:
     return cases if split == "all" else [c for c in cases if c.metadata.get("split") == split]
+
+
+def completed(cases: list[EvaluationCase], report: EvaluationReport) -> list[EvaluationCase]:
+    """Cases every strategy of the report has a prediction for (runs can stop early on quota)."""
+    return [c for c in cases if all(c.case_id in recs for recs in report.predictions.values())]
 
 
 def variants(
@@ -85,7 +193,7 @@ def variants(
     return out
 
 
-def policy_row(metrics) -> dict[str, Any]:
+def policy_row(metrics, ci: dict[str, Any] | None = None) -> dict[str, Any]:
     def triple(p):
         return None if p is None else {"p": p.precision, "r": p.recall, "f1": p.f1}
 
@@ -112,7 +220,19 @@ def policy_row(metrics) -> dict[str, Any]:
         "initial_agent_failures": metrics.initial_agent_failures,
         "cases_retried": metrics.cases_retried,
         "mean_latency_ms": metrics.mean_latency_ms,
+        "ci": ci or {},
     }
+
+
+def _row(chosen, key, records, transform, subset) -> tuple[dict[str, Any], dict[str, list]]:
+    metrics, _ = metrics_from_records(key, chosen, records, subset=subset, transform=transform)
+    counts = {
+        policy: case_counts(chosen, records, policy, subset=subset, transform=transform)
+        for policy in POLICY_FACTORIES
+    }
+    indices = draw_indices(len(chosen)) if chosen else []
+    ci = {policy: bootstrap_ci(c, indices) for policy, c in counts.items()}
+    return policy_row(metrics, ci), counts
 
 
 def score_report(
@@ -123,19 +243,30 @@ def score_report(
     verify: bool,
     subset: str = "actionable",
 ) -> dict[str, dict[str, Any]]:
-    """split -> variant -> metrics row."""
+    """split -> variant -> metrics row (with bootstrap CIs); split -> "_paired" -> comparisons."""
     result: dict[str, dict[str, Any]] = {}
+    cases = completed(cases, report)
     for split in SPLITS:
         chosen = select_cases(cases, split)
         if not chosen:
             continue
         rows: dict[str, Any] = {}
+        all_counts: dict[str, dict[str, list]] = {}
         for name, (key, transform) in variants(report, config, verify=verify).items():
-            metrics, _ = metrics_from_records(
-                key, chosen, report.predictions[key], subset=subset, transform=transform
+            rows[name], all_counts[name] = _row(
+                chosen, key, report.predictions[key], transform, subset
             )
-            rows[name] = policy_row(metrics)
-        result[split] = rows
+        indices = draw_indices(len(chosen))
+        paired = {}
+        for left, right in PAIRS:
+            if left in all_counts and right in all_counts:
+                paired[f"{left} minus {right}"] = {
+                    policy: paired_difference(
+                        all_counts[left][policy], all_counts[right][policy], indices
+                    )
+                    for policy in POLICY_FACTORIES
+                }
+        result[split] = {**rows, "_paired": paired}
     return result
 
 
@@ -144,6 +275,7 @@ def score_injected_by_category(
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """split -> variant -> injected category -> row (precision uses that category's cases)."""
     result: dict[str, dict[str, dict[str, Any]]] = {}
+    cases = completed(cases, report)
     for split in ("test", "dev", "all"):
         chosen = select_cases(cases, split)
         out: dict[str, dict[str, Any]] = {}
@@ -151,10 +283,7 @@ def score_injected_by_category(
             per_cat = {}
             for category in sorted({c.metadata["category"] for c in chosen}):
                 subset = [c for c in chosen if c.metadata["category"] == category]
-                metrics, _ = metrics_from_records(
-                    key, subset, report.predictions[key], subset="all", transform=transform
-                )
-                per_cat[category] = policy_row(metrics)
+                per_cat[category], _ = _row(subset, key, report.predictions[key], transform, "all")
             out[name] = per_cat
         result[split] = out
     return result
@@ -358,30 +487,65 @@ def _fmt(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.3f}"
 
 
+def _ci(row: dict[str, Any], policy: str, name: str, value: float | None) -> str:
+    interval = row.get("ci", {}).get(policy, {}).get(name)
+    if not interval:
+        return _fmt(value)
+    return f"{_fmt(value)} [{interval[0]:.2f}, {interval[1]:.2f}]"
+
+
+def _visible(rows: dict[str, Any]):
+    return ((name, row) for name, row in rows.items() if not name.startswith("_"))
+
+
 def policy_table(rows: dict[str, Any], key: str) -> str:
     lines = [
-        "| Strategy | TP | FP | FN | Precision | Recall | F1 |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Strategy | n cases | TP | FP | FN | Precision (95% CI) | Recall (95% CI) | "
+        "F1 (95% CI) |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for name, row in rows.items():
+    for name, row in _visible(rows):
         part = row[key]
         lines.append(
-            f"| {name} | {part['tp']} | {part['fp']} | {part['fn']} | {_fmt(part['p'])} | "
-            f"{_fmt(part['r'])} | {_fmt(part['f1'])} |"
+            f"| {name} | {row['cases']} | {part['tp']} | {part['fp']} | {part['fn']} | "
+            f"{_ci(row, key, 'p', part['p'])} | {_ci(row, key, 'r', part['r'])} | "
+            f"{_ci(row, key, 'f1', part['f1'])} |"
         )
     return "\n".join(lines)
 
 
 def extras_table(rows: dict[str, Any]) -> str:
     lines = [
-        "| Strategy | Hunk P | Hunk R | Hunk F1 | P@1 | P@3 | P@5 |",
+        "| Strategy | Hunk P (95% CI) | Hunk R (95% CI) | Hunk F1 (95% CI) | P@1 | P@3 | P@5 |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for name, row in rows.items():
+    for name, row in _visible(rows):
         hunk, at_k = row["hunk"], row["precision_at_k"]
         lines.append(
-            f"| {name} | {_fmt(hunk['p'])} | {_fmt(hunk['r'])} | {_fmt(hunk['f1'])} | "
-            f"{_fmt(at_k.get('p@1'))} | {_fmt(at_k.get('p@3'))} | {_fmt(at_k.get('p@5'))} |"
+            f"| {name} | {_ci(row, 'hunk', 'p', hunk['p'])} | {_ci(row, 'hunk', 'r', hunk['r'])} | "
+            f"{_ci(row, 'hunk', 'f1', hunk['f1'])} | {_fmt(at_k.get('p@1'))} | "
+            f"{_fmt(at_k.get('p@3'))} | {_fmt(at_k.get('p@5'))} |"
+        )
+    return "\n".join(lines)
+
+
+def _delta(entry: dict[str, Any]) -> str:
+    return f"{entry['diff']:+.3f} [{entry['ci'][0]:+.2f}, {entry['ci'][1]:+.2f}]"
+
+
+def paired_table(rows: dict[str, Any], policy: str = "location") -> str:
+    lines = [
+        "| Comparison (A minus B) | n cases | dP (95% CI) | dR (95% CI) | dF1 (95% CI) | "
+        "F1 interval includes 0? |",
+        "| --- | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for name, by_policy in rows.get("_paired", {}).items():
+        part = by_policy[policy]
+
+        verdict = "yes: not distinguishable from 0" if part["f1"]["includes_zero"] else "no"
+        lines.append(
+            f"| {name} | {part['n_cases']} | {_delta(part['p'])} | {_delta(part['r'])} | "
+            f"{_delta(part['f1'])} | {verdict} |"
         )
     return "\n".join(lines)
 
@@ -392,7 +556,7 @@ def health_table(rows: dict[str, Any]) -> str:
         "Cases retried | Mean latency (ms) |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for name, row in rows.items():
+    for name, row in _visible(rows):
         lines.append(
             f"| {name} | {row['cases']} | {row['agent_runs']} | {row['initial_agent_failures']} | "
             f"{row['agent_failures']} | {row['cases_retried']} | {row['mean_latency_ms']:.0f} |"
@@ -402,16 +566,17 @@ def health_table(rows: dict[str, Any]) -> str:
 
 def category_table(rows: dict[str, dict[str, Any]]) -> str:
     lines = [
-        "| Strategy | Category | Cases | Detected (location) | Recall | Precision | F1 | "
-        "Recall with category |",
+        "| Strategy | Category | Cases | Detected (location) | Recall (95% CI) | "
+        "Precision (95% CI) | F1 (95% CI) | Recall with category |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for name, per_cat in rows.items():
+    for name, per_cat in _visible(rows):
         for category, row in per_cat.items():
             loc, cat = row["location"], row["category"]
             lines.append(
-                f"| {name} | {category} | {row['cases']} | {loc['tp']} | {_fmt(loc['r'])} | "
-                f"{_fmt(loc['p'])} | {_fmt(loc['f1'])} | {_fmt(cat['r'])} |"
+                f"| {name} | {category} | {row['cases']} | {loc['tp']} | "
+                f"{_ci(row, 'location', 'r', loc['r'])} | {_ci(row, 'location', 'p', loc['p'])} | "
+                f"{_ci(row, 'location', 'f1', loc['f1'])} | {_fmt(cat['r'])} |"
             )
     return "\n".join(lines)
 
@@ -466,6 +631,10 @@ def main() -> None:
             entry["addressed_subset"] = score_report(
                 cases, report, config, verify=verify, subset="addressed"
             )
+            entry["cases_in_corpus"] = len(cases)
+            entry["cases_completed"] = {
+                split: len(select_cases(completed(cases, report), split)) for split in SPLITS
+            }
             entry["ground_truth_counts"] = {
                 split: {
                     "cases": len(select_cases(cases, split)),
