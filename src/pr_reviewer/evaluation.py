@@ -706,6 +706,11 @@ def main() -> None:
         action="store_true",
         help="drop checkpointed cases with failed agents/verification and run them again",
     )
+    parser.add_argument(
+        "--report-only",
+        action="store_true",
+        help="no LLM calls: report only the cases the checkpoint already holds for every strategy",
+    )
     parser.add_argument("--checkpoint", type=Path, help="resume file; finished cases are kept")
     parser.add_argument(
         "--subset", choices=("actionable", "addressed", "all"), default="actionable"
@@ -732,6 +737,14 @@ def main() -> None:
     if args.splits_first:
         order = {name.strip(): i for i, name in enumerate(args.splits_first.split(","))}
         cases = sorted(cases, key=lambda c: order.get(c.metadata.get("split"), len(order)))
+    if args.report_only:
+        if not args.checkpoint:
+            raise SystemExit("--report-only needs --checkpoint")
+        held = _load_checkpoint(args.checkpoint)
+        wanted = [name for name in strategies if name != "static-only"] or list(strategies)
+        cases = [c for c in cases if all(c.case_id in held.get(n, {}) for n in wanted)]
+        if not cases:
+            raise SystemExit("checkpoint holds no complete case for these strategies")
     if args.limit:
         cases = cases[: args.limit]
     verifier = None
