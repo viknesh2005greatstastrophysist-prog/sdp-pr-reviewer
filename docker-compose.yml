@@ -7,6 +7,10 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+psycopg://reviewer:reviewer@postgres:5432/reviewer
+      # The root filesystem is read-only; analyzers need a writable home for caches.
+      HOME: /tmp
+      SEMGREP_SEND_METRICS: "off"
+      RUFF_CACHE_DIR: /tmp/ruff-cache
     depends_on:
       postgres:
         condition: service_healthy

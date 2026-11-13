@@ -47,7 +47,7 @@
             <button id="liveToggle" data-mode="live"><span></span>Live</button>
           </div>
           <button class="icon-button" id="refreshButton" title="Refresh dashboard" aria-label="Refresh dashboard">↻</button>
-          <span class="avatar" aria-label="Local user">LR</span>
+          <div id="accountArea" class="account-area" aria-live="polite"></div>
         </div>
       </header>
 
@@ -65,7 +65,7 @@
               <div class="orbit" aria-hidden="true"><i></i><i></i><b>4</b></div>
             </div>
 
-            <form id="reviewForm">
+            <form id="reviewForm" novalidate>
               <div id="demoControls" class="demo-controls">
                 <div class="demo-case-label"><span>CHOOSE A DEMONSTRATION</span><small>Each case runs through the real local pipeline</small></div>
                 <div id="demoCasePicker" class="demo-case-picker" role="radiogroup" aria-label="Demonstration case"></div>
@@ -75,12 +75,38 @@
                 </div>
               </div>
               <div id="liveControls" class="live-controls hidden">
-                <label>Owner<input id="ownerInput" autocomplete="off" placeholder="octocat" pattern="[A-Za-z0-9_.-]+" required></label>
-                <label>Repository<input id="repoInput" autocomplete="off" placeholder="hello-world" pattern="[A-Za-z0-9_.-]+" required></label>
-                <label class="pr-number">PR number<input id="numberInput" type="number" min="1" placeholder="42" required></label>
-                <button type="submit" class="primary-button"><span>▶</span> Review pull request</button>
+                <p id="liveNote" class="live-note" role="status"></p>
+                <div id="signInPrompt" class="signin-prompt hidden">
+                  <a class="primary-button" href="/auth/github/login">Sign in with GitHub</a>
+                  <small>Sign-in lets PRISM list your repositories and open pull requests. It uses read access only.</small>
+                </div>
+                <div id="pickerBlock" class="picker-block hidden">
+                  <div class="picker-col">
+                    <label for="repoSearch">Repository</label>
+                    <input id="repoSearch" type="search" autocomplete="off" placeholder="Search your repositories">
+                    <div id="repoList" class="repo-list" role="listbox" aria-label="Your repositories"></div>
+                  </div>
+                  <div class="picker-col">
+                    <div class="picker-head"><span id="prHeading">Open pull requests</span><button type="button" class="text-button" id="prReload">Reload</button></div>
+                    <div id="prList" class="pr-list" aria-live="polite"><p class="list-empty">Choose a repository to see its open pull requests.</p></div>
+                  </div>
+                </div>
+                <details id="manualBlock" class="manual-block">
+                  <summary>Enter a pull request manually</summary>
+                  <div class="manual-grid">
+                    <label>Owner<input id="ownerInput" autocomplete="off" placeholder="octocat"></label>
+                    <label>Repository<input id="repoInput" autocomplete="off" placeholder="hello-world"></label>
+                    <label class="pr-number">PR number<input id="numberInput" type="number" min="1" placeholder="42"></label>
+                    <button type="submit" class="primary-button" id="manualSubmit"><span>▶</span> Review pull request</button>
+                  </div>
+                </details>
+                <div class="publish-box" id="publishBox">
+                  <label class="check"><input type="checkbox" id="publishInput"> <span>Post advisory comments to GitHub</span></label>
+                  <small id="publishNote">Off by default. When on, PRISM posts one GitHub review of type COMMENT. It never approves, requests changes or merges.</small>
+                </div>
               </div>
             </form>
+            <div id="jobCard" class="job-card hidden" aria-live="polite"></div>
           </article>
 
           <article class="readiness surface">
@@ -136,14 +162,19 @@
 
       <section class="view" id="view-findings">
         <div class="page-intro row"><div><span class="section-kicker">CONSOLIDATED OUTPUT</span><h2>Evidence-backed findings</h2><p>Deduplicated, severity-ranked and restricted to changed lines.</p></div><div class="filter-group" id="severityFilters"><button class="active" data-severity="ALL">All</button><button data-severity="CRITICAL">Critical</button><button data-severity="HIGH">High</button><button data-severity="MEDIUM">Medium</button><button data-severity="LOW">Low</button></div></div>
+        <div id="reviewMeta" class="review-meta surface hidden"></div>
         <div id="findingsList" class="findings-list surface"><div class="empty-state"><span>◇</span><h3>No review loaded</h3><p>Run the demo or connect a live pull request to inspect findings.</p></div></div>
       </section>
 
       <section class="view" id="view-history">
-        <div class="page-intro"><span class="section-kicker">POSTGRESQL REVIEW LOG</span><h2>Review history</h2><p>Look up persisted review runs for a repository.</p></div>
+        <article class="surface history-panel jobs-panel">
+          <div class="section-heading"><div><span class="section-kicker">BACKGROUND JOBS</span><h3>Recent review jobs</h3></div><button class="secondary-button" type="button" id="jobsReload">Reload</button></div>
+          <div class="table-wrap"><table class="clickable"><thead><tr><th>Status</th><th>Repository</th><th>PR</th><th>Trigger</th><th>Findings</th><th>Started</th><th>Duration</th></tr></thead><tbody id="jobRows"><tr><td colspan="7" class="table-empty">Loading jobs…</td></tr></tbody></table></div>
+        </article>
+        <div class="page-intro history-intro"><span class="section-kicker">POSTGRESQL REVIEW LOG</span><h2>Review history</h2><p>Look up persisted review runs for a repository.</p></div>
         <article class="surface history-panel">
           <form id="historyForm" class="history-form"><label>Repository<input id="historyRepo" placeholder="owner/repository" required pattern="[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"></label><button class="secondary-button" type="submit">Load history</button></form>
-          <div class="table-wrap"><table><thead><tr><th>Review</th><th>Repository</th><th>Pull request</th><th>Commit</th><th>Findings</th><th>Created</th></tr></thead><tbody id="historyRows"><tr><td colspan="6" class="table-empty">Enter a repository to query stored reviews.</td></tr></tbody></table></div>
+          <div class="table-wrap"><table class="clickable"><thead><tr><th>Review</th><th>Repository</th><th>Pull request</th><th>Commit</th><th>Findings</th><th>Created</th></tr></thead><tbody id="historyRows"><tr><td colspan="6" class="table-empty">Enter a repository to query stored reviews.</td></tr></tbody></table></div>
         </article>
       </section>
 
@@ -161,7 +192,7 @@
       <h3></h3><p class="finding-message"></p>
       <div class="code-location"><code></code></div>
       <div class="evidence-block"><strong>Evidence</strong><p></p></div>
-      <div class="suggestion-block hidden"><strong>Validated suggestion</strong><pre><code></code></pre><p></p></div>
+      <div class="suggestion-block hidden"><strong>Suggested change</strong> <span class="validated-badge"></span><pre><code></code></pre><p></p></div>
     </article>
   </template>
   <script src="/assets/dashboard.js" defer></script>
