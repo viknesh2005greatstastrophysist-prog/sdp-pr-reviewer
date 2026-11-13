@@ -1,9 +1,77 @@
 # Evaluation results (partial: free-tier quota)
 
 Generated 2026-11-14 by `scripts/render_results.py` from `evaluation/scores/*.json` (scoring commit
-`16c3515`). Every interval is a 95% percentile bootstrap over cases (2000 draws, seed
+`410e4cf`). Every interval is a 95% percentile bootstrap over cases (2000 draws, seed
 20261114); `n` is the number of cases, not comments. Plans are not outcomes: this file
 says what ran.
+
+## 0. Post-fix re-run of the human-comment benchmark (2026-11-14, partial: n = 3)
+
+**What changed.** Commit `341b7ad` gives the review agents a line-numbered diff and snaps
+near-miss findings to an added line. Before it, agents had to count lines from hunk headers and
+findings on mis-numbered lines were dropped: **3 agent findings kept in
+151 agent runs** over 31 cases (pre-fix checkpoint;
+single agent 1 in 31 runs). Section 3 below is
+the **pre-fix** run and is kept for the record only.
+
+**What ran (2026-11-14, 04:02-04:32 IST).** Model probe: `gemini-3-flash-preview` and
+`gemini-2.5-flash-lite` answered; `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite` returned 429;
+`gemini-flash-latest`, `gemini-3.7-flash` and `gemini-3.8-flash` did not answer within 40 s.
+`gemini-3-flash-preview` was used for every LLM step (single agent, hybrid specialists, verifier),
+test split only, the first 2 cases of each test repository, agents sequential and paced, up to 3
+passes. Each call took about 70-80 s, and the model's free tier stopped at **20 requests per day**
+(429 `GenerateRequestsPerDayPerProjectPerModel-FreeTier`) after the single agent and verifier had
+finished **3 test cases**. **No hybrid case completed**, so there is no hybrid row and no
+hybrid-minus-single or hybrid-minus-static difference for the post-fix code. A second attempt on
+`gemini-2.5-flash-lite` and then `gemini-2.5-flash` hit the same daily cap before finishing one
+case and is not used. Predictions from code commit `410e4cf2735dc62b0448a05287dc3ec6c2b67425`.
+
+**Agent output after the fix:** the single agent kept **10 findings in 3
+runs** (pre-fix: 1 in 31; all agents
+3 in 151); findings still dropped as not on an added line:
+0; failed agent runs: 0. This shows the fix lets agent findings
+through; with n = 3 it does **not** support any claim about rates.
+
+#### 0a. Test split, post-fix, static-only vs single agent on the same 3 cases (location policy primary)
+
+| Strategy | n cases | TP | FP | FN | Precision (95% CI) | Recall (95% CI) | F1 (95% CI) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| static-only | 3 | 0 | 18 | 22 | 0.000 [0.00, 0.00] | 0.000 [0.00, 0.00] | 0.000 [0.00, 0.00] |
+| single-agent | 3 | 3 | 25 | 19 | 0.107 [0.00, 0.75] | 0.136 [0.00, 0.75] | 0.120 [0.00, 0.75] |
+| static-only (focused) | 3 | 0 | 0 | 22 | 0.000 [0.00, 0.00] | 0.000 [0.00, 0.00] | 0.000 [0.00, 0.00] |
+| single-agent (focused) | 3 | 3 | 5 | 19 | 0.375 [0.00, 0.75] | 0.136 [0.00, 0.75] | 0.200 [0.00, 0.75] |
+
+Paired differences (location-only, same cases, bootstrap 95% CI):
+
+| Comparison (A minus B) | n cases | dP (95% CI) | dR (95% CI) | dF1 (95% CI) | F1 interval includes 0? |
+| --- | ---: | ---: | ---: | ---: | --- |
+| single-agent minus static-only | 3 | +0.107 [+0.00, +0.75] | +0.136 [+0.00, +0.75] | +0.120 [+0.00, +0.75] | yes: not distinguishable from 0 |
+| single-agent (focused) minus static-only (focused) | 3 | +0.375 [+0.00, +0.75] | +0.136 [+0.00, +0.75] | +0.200 [+0.00, +0.75] | yes: not distinguishable from 0 |
+
+Category-matching policy (secondary):
+
+| Strategy | n cases | TP | FP | FN | Precision (95% CI) | Recall (95% CI) | F1 (95% CI) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| static-only | 3 | 0 | 18 | 22 | 0.000 [0.00, 0.00] | 0.000 [0.00, 0.00] | 0.000 [0.00, 0.00] |
+| single-agent | 3 | 0 | 28 | 22 | 0.000 [0.00, 0.00] | 0.000 [0.00, 0.00] | 0.000 [0.00, 0.00] |
+| static-only (focused) | 3 | 0 | 0 | 22 | 0.000 [0.00, 0.00] | 0.000 [0.00, 0.00] | 0.000 [0.00, 0.00] |
+| single-agent (focused) | 3 | 0 | 8 | 22 | 0.000 [0.00, 0.00] | 0.000 [0.00, 0.00] | 0.000 [0.00, 0.00] |
+
+Hunk-level match and precision@k (location window):
+
+| Strategy | Hunk P (95% CI) | Hunk R (95% CI) | Hunk F1 (95% CI) | P@1 | P@3 | P@5 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| static-only | 0.500 [0.00, 0.60] | 0.409 [0.00, 0.90] | 0.450 [0.00, 0.72] | 0.000 | 0.000 | 0.000 |
+| single-agent | 0.464 [0.00, 1.00] | 0.591 [0.00, 1.00] | 0.520 [0.00, 1.00] | 0.000 | 0.222 | 0.214 |
+| static-only (focused) | 0.000 [0.00, 0.00] | 0.000 [0.00, 0.00] | 0.000 [0.00, 0.00] | 0.000 | 0.000 | 0.000 |
+| single-agent (focused) | 0.625 [0.00, 1.00] | 0.227 [0.00, 1.00] | 0.333 [0.00, 1.00] | 0.000 | 0.286 | 0.375 |
+
+#### 0b. Agent health (post-fix run)
+
+| Strategy | Cases | Agent runs | Failed on first pass | Failed after up to 3 passes | Mean latency per case (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| static-only | 3 | 0 | 0 | 0 | 1676 |
+| single-agent | 3 | 3 | 0 | 0 | 74713 |
 
 ## 1. Status in plain words
 
@@ -64,8 +132,8 @@ version is used; otherwise write a separate result file.
 - **Corpus** (`evaluation/CORPUS.md`): merged PRs of 15 public Python repositories, inline human
   review comments on added `.py` lines, at least 2 kept comments per case; 144 cases, 534
   comments. Built 2026-11-14 with the GitHub API; code is fetched as data and never executed.
-- **Split by repository** (seeded hash, recorded in each case): dev = 8 repositories
-  (76 cases), test = 7 repositories (68 cases). Nothing was tuned on test.
+- **Split by repository** (seeded hash, recorded in each case): dev = 7 repositories
+  (76 cases), test = 8 repositories (68 cases). Nothing was tuned on test.
 - **Labels**: an LLM classifier (temperature 0, strict JSON schema) judged each comment
   *actionable* or not and gave a category. Actionable: 413 of
   534 (77.3%). Agreement with the keyword heuristic on
@@ -98,7 +166,7 @@ version is used; otherwise write a separate result file.
   (commit `c4d2de3` era; plain Gemini client). Static analysis is the 7125f24 layer (test-file
   exemptions, categories mapped to the four axes).
 
-## 3. Human-comment benchmark
+## 3. Human-comment benchmark (PRE-FIX: predictions from before commit 341b7ad; superseded by section 0)
 
 Model for LLM strategies: `gemini-3.5-flash-lite` (every strategy). Agents ran sequentially
 within a case with pacing; failed agents were re-run up to 3 passes.
@@ -174,9 +242,9 @@ Paired differences (location-only, same cases, bootstrap 95% CI):
 **Reading it.** Agents contributed one finding over 30 cases on this
 model, so hybrid, single-agent and static-only are nearly identical and every paired interval
 includes zero (all differences are 0 to 1 hit). The honest conclusion is *no measured difference*,
-not "agents do not help": the cause of the near-empty agent output was not investigated (no new LLM
-calls were allowed; raw responses are not stored) and could be a conservative model, or the
-anchoring filter that drops findings not on an added line. Focused mode removes almost everything
+not "agents do not help": the near-empty agent output was later traced to the anchoring filter
+dropping findings on mis-numbered lines (agents got a diff without line numbers; fixed in commit
+`341b7ad`, re-run in section 0). Focused mode removes almost everything
 (it keeps Semgrep and defect-family Ruff rules; most human comments are about naming, docs and
 design), so its recall collapses: it is a precision mode, not a recall mode.
 
@@ -408,6 +476,6 @@ false positives from the injected paired subset (all splits, 31 in the pool). Co
   regressions are subtler. The hybrid covers two of four categories.
 - The static layer changed during the project (7125f24: test-file exemptions); all static numbers
   here are from that layer.
-- Agent output on the human benchmark was almost empty (1 finding in 30 cases); the cause was not
-  investigated.
+- Pre-fix agent output on the human benchmark was almost empty (1 finding in 30 cases); the cause
+  was later found (mis-numbered lines dropped; fixed in commit 341b7ad) and section 0 re-runs it.
 - No human has yet checked the labels or the adjudication sample.

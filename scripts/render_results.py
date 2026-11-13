@@ -52,6 +52,81 @@ def block(title: str, rows: dict, *, extras: bool = True, category_policy: bool 
     return "\n".join(out)
 
 
+POSTFIX = "human_test_gemini-3-flash-preview_postfix"
+PREFIX_CHECKPOINT = ROOT / "checkpoints" / "human_gemini-3.5-flash-lite.json"
+POSTFIX_CHECKPOINT = ROOT / "checkpoints" / f"{POSTFIX}.json"
+
+
+def agent_output(checkpoint: Path, strategies=("single-agent", "hybrid-multi-agent")) -> dict:
+    """Agent runs and agent findings kept (sum of finding_count over successful runs), per strategy."""
+    import re
+
+    data = json.loads(checkpoint.read_text())
+    out: dict = {}
+    for name in strategies:
+        row = {"cases": 0, "runs": 0, "failed": 0, "kept": 0, "dropped": 0}
+        for rec in data.get(name, {}).values():
+            row["cases"] += 1
+            for run in rec["agent_runs"]:
+                row["runs"] += 1
+                if run["status"] == "success":
+                    row["kept"] += run["finding_count"] or 0
+                else:
+                    row["failed"] += 1
+            for warning in rec.get("warnings", []):
+                m = re.search(r"(\d+) finding\(s\) dropped", warning)
+                row["dropped"] += int(m.group(1)) if m else 0
+        out[name] = row
+    out["total"] = {k: sum(out[n][k] for n in strategies) for k in out[strategies[0]]}
+    return out
+
+
+def postfix_section() -> str:
+    """Section 0: the human-comment re-run after commit 341b7ad (numbered diff for the agents)."""
+    if not (ROOT / "scores" / f"{POSTFIX}.json").exists():
+        return ""
+    pf = load(POSTFIX, "human-comments")
+    rep = results(POSTFIX)
+    t = pf["tables"]["test"]
+    n = t["single-agent"]["cases"]
+    pre = agent_output(PREFIX_CHECKPOINT)
+    post = agent_output(POSTFIX_CHECKPOINT, ("single-agent",))["single-agent"]
+    env = rep.get("environment", {})
+    return f"""## 0. Post-fix re-run of the human-comment benchmark (2026-11-14, partial: n = {n})
+
+**What changed.** Commit `341b7ad` gives the review agents a line-numbered diff and snaps
+near-miss findings to an added line. Before it, agents had to count lines from hunk headers and
+findings on mis-numbered lines were dropped: **{pre["total"]["kept"]} agent findings kept in
+{pre["total"]["runs"]} agent runs** over {pre["single-agent"]["cases"]} cases (pre-fix checkpoint;
+single agent {pre["single-agent"]["kept"]} in {pre["single-agent"]["runs"]} runs). Section 3 below is
+the **pre-fix** run and is kept for the record only.
+
+**What ran (2026-11-14, 04:02-04:32 IST).** Model probe: `gemini-3-flash-preview` and
+`gemini-2.5-flash-lite` answered; `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite` returned 429;
+`gemini-flash-latest`, `gemini-3.7-flash` and `gemini-3.8-flash` did not answer within 40 s.
+`gemini-3-flash-preview` was used for every LLM step (single agent, hybrid specialists, verifier),
+test split only, the first 2 cases of each test repository, agents sequential and paced, up to 3
+passes. Each call took about 70-80 s, and the model's free tier stopped at **20 requests per day**
+(429 `GenerateRequestsPerDayPerProjectPerModel-FreeTier`) after the single agent and verifier had
+finished **{n} test cases**. **No hybrid case completed**, so there is no hybrid row and no
+hybrid-minus-single or hybrid-minus-static difference for the post-fix code. A second attempt on
+`gemini-2.5-flash-lite` and then `gemini-2.5-flash` hit the same daily cap before finishing one
+case and is not used. Predictions from code commit `{env.get("git_commit", "?")}`.
+
+**Agent output after the fix:** the single agent kept **{post["kept"]} findings in {post["runs"]}
+runs** (pre-fix: {pre["single-agent"]["kept"]} in {pre["single-agent"]["runs"]}; all agents
+{pre["total"]["kept"]} in {pre["total"]["runs"]}); findings still dropped as not on an added line:
+{post["dropped"]}; failed agent runs: {post["failed"]}. This shows the fix lets agent findings
+through; with n = {n} it does **not** support any claim about rates.
+
+{block(f"0a. Test split, post-fix, static-only vs single agent on the same {n} cases (location policy primary)", t, category_policy=True)}
+#### 0b. Agent health (post-fix run)
+
+{health(POSTFIX)}
+
+"""
+
+
 def main() -> None:
     commit = subprocess.run(  # noqa: S603
         ["git", "rev-parse", "--short", "HEAD"],  # noqa: S607
@@ -76,7 +151,7 @@ Generated 2026-11-14 by `scripts/render_results.py` from `evaluation/scores/*.js
 {S.BOOTSTRAP_SEED}); `n` is the number of cases, not comments. Plans are not outcomes: this file
 says what ran.
 
-## 1. Status in plain words
+{postfix_section()}## 1. Status in plain words
 
 - **This is a partial evaluation.** All LLM calls used free-tier Gemini/Gemma keys with hard
   per-model daily request caps (observed: 500 per day for `gemini-3.1-flash-lite`,
@@ -169,7 +244,7 @@ version is used; otherwise write a separate result file.
   (commit `c4d2de3` era; plain Gemini client). Static analysis is the 7125f24 layer (test-file
   exemptions, categories mapped to the four axes).
 
-## 3. Human-comment benchmark
+## 3. Human-comment benchmark (PRE-FIX: predictions from before commit 341b7ad; superseded by section 0)
 
 Model for LLM strategies: `gemini-3.5-flash-lite` (every strategy). Agents ran sequentially
 within a case with pacing; failed agents were re-run up to 3 passes.
@@ -179,9 +254,9 @@ within a case with pacing; failed agents were re-run up to 3 passes.
 **Reading it.** Agents contributed one finding over {hp["cases_completed"]["all"]} cases on this
 model, so hybrid, single-agent and static-only are nearly identical and every paired interval
 includes zero (all differences are 0 to 1 hit). The honest conclusion is *no measured difference*,
-not "agents do not help": the cause of the near-empty agent output was not investigated (no new LLM
-calls were allowed; raw responses are not stored) and could be a conservative model, or the
-anchoring filter that drops findings not on an added line. Focused mode removes almost everything
+not "agents do not help": the near-empty agent output was later traced to the anchoring filter
+dropping findings on mis-numbered lines (agents got a diff without line numbers; fixed in commit
+`341b7ad`, re-run in section 0). Focused mode removes almost everything
 (it keeps Semgrep and defect-family Ruff rules; most human comments are about naming, docs and
 design), so its recall collapses: it is a precision mode, not a recall mode.
 
@@ -288,8 +363,8 @@ false positives from the injected paired subset (all splits, 31 in the pool). Co
   regressions are subtler. The hybrid covers two of four categories.
 - The static layer changed during the project (7125f24: test-file exemptions); all static numbers
   here are from that layer.
-- Agent output on the human benchmark was almost empty (1 finding in 30 cases); the cause was not
-  investigated.
+- Pre-fix agent output on the human benchmark was almost empty (1 finding in 30 cases); the cause
+  was later found (mis-numbered lines dropped; fixed in commit 341b7ad) and section 0 re-runs it.
 - No human has yet checked the labels or the adjudication sample.
 """)
     Path("evaluation/RESULTS.md").write_text("\n".join(parts), encoding="utf-8")

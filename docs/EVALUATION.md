@@ -79,5 +79,10 @@ For academic reporting, record the commit SHA, corpus hash, model identifier, an
   The LLM strategies are **partial** (30 of 144 human cases; hybrid on 21 of 60 injected cases)
   because of free-tier daily quotas; see `evaluation/RESULTS.md` section 1 for the exact counts and
   the command to extend them.
+- Post-fix re-run (2026-11-14, after commit `341b7ad`, partial): `evaluation/checkpoints/human_test_gemini-3-flash-preview_postfix.json`,
+  `evaluation/results_human_test_gemini-3-flash-preview_postfix.json` and
+  `evaluation/scores/human_test_gemini-3-flash-preview_postfix.json`: static-only and single-agent on
+  3 test cases; no hybrid case finished before the model's 20-requests-per-day free-tier cap
+  (`evaluation/RESULTS.md` section 0).
 - `evaluation/legacy/`: the earlier 42-case run (unlabelled, one model, 57 of 168 agent calls failed
   on rate limits), kept for history; superseded.
