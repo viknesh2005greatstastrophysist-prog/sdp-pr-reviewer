@@ -20,6 +20,11 @@ class RefactoringEngine:
             return None
         if "\x00" in suggestion.replacement or len(suggestion.replacement) > 12_000:
             return None
+        suggestion = suggestion.model_copy(
+            update={
+                "replacement": _reindent(suggestion.replacement, diff_file, suggestion.start_line)
+            }
+        )
         if diff_file.path.endswith(".py"):
             try:
                 ast.parse(textwrap.dedent(suggestion.replacement))
@@ -65,3 +70,15 @@ class RefactoringEngine:
             if finding.path in by_path and finding.suggestion:
                 if self.validate(finding, by_path[finding.path]) is None:
                     finding.suggestion = None
+
+
+def _reindent(replacement: str, diff_file: DiffFile, start_line: int) -> str:
+    """Re-base a replacement on the indentation of the first line it replaces.
+
+    Models often return the fix flush-left; GitHub applies a suggestion verbatim, so a
+    flush-left fix inside a function would break the file. Relative indentation is kept.
+    """
+    original = next((item.text for item in diff_file.lines if item.new_line == start_line), "")
+    indent = original[: len(original) - len(original.lstrip())]
+    body = textwrap.dedent(replacement.strip("\n"))
+    return "\n".join((indent + row) if row.strip() else row for row in body.split("\n"))

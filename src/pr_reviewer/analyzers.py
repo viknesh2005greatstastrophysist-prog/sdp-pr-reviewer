@@ -110,7 +110,7 @@ class StaticAnalyzer:
                         Finding(
                             path=path,
                             line=line,
-                            category="style" if tool == "ruff" else "security",
+                            category=static_category(tool, code),
                             severity=self._severity(tool, item),
                             title=f"{tool}: {code or 'diagnostic'}",
                             message=message or "Static analysis diagnostic",
@@ -141,3 +141,20 @@ class StaticAnalyzer:
 
 def analyze(files: list[DiffFile], repo: str | None = None) -> tuple[list[Finding], list[str]]:
     return StaticAnalyzer().analyze(files, repo)
+
+
+# Ruff rule prefixes mapped onto the project's four review axes. Security (S), likely bugs
+# (B, F, E9, PLE) are correctness problems; PERF is performance; the rest is style.
+_BUG_PREFIXES = ("S", "B", "F", "E9", "PLE", "PLW", "ASYNC", "BLE", "TRY")
+_PERFORMANCE_PREFIXES = ("PERF", "C4")
+
+
+def static_category(tool: str, code: str | None) -> str:
+    if tool != "ruff":
+        return "bug-hunter"  # local Semgrep rules target security and correctness defects
+    rule = (code or "").upper()
+    if rule.startswith(_PERFORMANCE_PREFIXES):
+        return "performance"
+    if rule.startswith(_BUG_PREFIXES):
+        return "bug-hunter"
+    return "style"

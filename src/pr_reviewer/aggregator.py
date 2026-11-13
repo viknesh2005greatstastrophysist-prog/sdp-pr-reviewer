@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import keyword
 import re
 
-from .models import Finding, Severity
+from .models import DiffFile, Finding, Severity
 
 RANK = {
     Severity.CRITICAL: 5,
@@ -24,11 +25,51 @@ def _similar(left: Finding, right: Finding) -> bool:
     return bool(a and b) and len(a & b) / len(a | b) >= 0.55
 
 
-def aggregate(findings: list[Finding]) -> list[Finding]:
+_KEYWORDS = set(keyword.kwlist) | {"self", "cls", "none", "true", "false"}
+
+
+def _subtokens(value: str) -> set[str]:
+    """Identifier tokens plus their snake_case parts (literal_eval -> literal, eval)."""
+    out: set[str] = set()
+    for word in re.findall(r"[a-z0-9_]+", value.casefold()):
+        out.add(word)
+        out.update(part for part in word.split("_") if part)
+    return {word for word in out if len(word) > 2 and not word.isdigit()}
+
+
+def _code_line(files: list[DiffFile] | None, path: str, line: int) -> str:
+    for diff_file in files or []:
+        if diff_file.path == path:
+            return next((item.text for item in diff_file.lines if item.new_line == line), "")
+    return ""
+
+
+def _same_subject(left: Finding, right: Finding, files: list[DiffFile] | None) -> bool:
+    """Different tools naming the same identifier on the same line describe one problem."""
+    if left.path != right.path or left.line != right.line or left.source == right.source:
+        return False
+    salient = _subtokens(_code_line(files, left.path, left.line)) - _KEYWORDS
+    if not salient:
+        return False
+
+    def mentions(item: Finding) -> set[str]:
+        return _subtokens(f"{item.title} {item.message} {item.rule_id or ''}") & salient
+
+    return bool(mentions(left) & mentions(right))
+
+
+def aggregate(findings: list[Finding], files: list[DiffFile] | None = None) -> list[Finding]:
     """Collapse exact and semantically near findings, retaining strongest evidence."""
     unique: list[Finding] = []
     for finding in sorted(findings, key=lambda item: (-RANK[item.severity], -item.confidence)):
-        duplicate = next((item for item in unique if _similar(item, finding)), None)
+        duplicate = next(
+            (
+                item
+                for item in unique
+                if _similar(item, finding) or _same_subject(item, finding, files)
+            ),
+            None,
+        )
         if duplicate is None:
             unique.append(finding.model_copy(deep=True))
             continue

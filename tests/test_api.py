@@ -32,7 +32,7 @@ def test_dashboard_demo_runs_pipeline():
     payload = response.json()
     assert payload["files"][0]["path"] == "app.py"
     assert len(payload["agent_runs"]) == 4
-    assert any(item["rule_id"] == "S307" for item in payload["findings"])
+    assert any("ruff" in item["source"].split("+") for item in payload["findings"])
     assert any(
         item.get("suggestion", {}).get("validated")
         for item in payload["findings"]

@@ -1,8 +1,12 @@
+// PRISM dashboard. Every value that comes from the API is inserted with textContent through
+// el(); no markup is ever built from response data.
 const state = {
   mode: "demo",
   result: null,
+  origin: null,
   status: null,
   severity: "ALL",
+  expanded: new Set(),
   busy: false,
   demoCases: [],
   selectedCase: "full-spectrum",
@@ -12,36 +16,76 @@ const state = {
   selectedRepo: "",
   pulls: null,
   job: null,
+  demoRun: null,
+  latest: null,
   pollToken: 0,
   elapsedTimer: null,
   jobs: null,
 };
 
+const VIEWS = ["overview", "findings", "history", "workflow", "configuration"];
+const VIEW_TITLES = { overview: "Overview", findings: "Findings", history: "History", workflow: "Workflow", configuration: "Configuration" };
 const SEVERITY_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, INFO: 4 };
-
-const workflowStages = [
-  { id: "ingest", icon: "GH", title: "PR ingestion", short: "GitHub metadata and diff", description: "Retrieves pull-request metadata, the unified diff and changed file contents using GitHub REST or the fixed demo fixture.", input: "PR reference or trusted demo", safeguard: "GitHub App/token auth; bounded payloads", output: "Metadata, head SHA and raw diff" },
-  { id: "parse", icon: "Δ", title: "Diff mapping", short: "Changed-line coordinates", description: "Parses unified diff hunks and maps old lines, new lines and GitHub-compatible diff positions.", input: "Unified diff text", safeguard: "Path normalization and added-line filtering", output: "Typed DiffFile and ChangedLine models" },
-  { id: "context", icon: "AST", title: "AST context", short: "Functions and classes", description: "Enriches changed Python lines with their enclosing function, class and source range to ground later reasoning.", input: "Materialized changed files", safeguard: "Parsing only; pull-request code is never imported", output: "Per-line CodeContext evidence" },
-  { id: "static", icon: "R+S", title: "Static analysis", short: "Ruff and Semgrep", description: "Runs deterministic Ruff and local-rule Semgrep scans, retaining diagnostics only when they point to added lines.", input: "Isolated changed-file checkout", safeguard: "No shell, cache disabled, hard timeout", output: "Rule-backed findings with confidence 1.0" },
-  { id: "agents", icon: "4×", title: "Agent fan-out", short: "Four specialists", description: "Runs Bug Hunter, Performance, Style/Syntax and Architecture/Scalability concurrently through LangGraph.", input: "Diff plus AST context", safeguard: "Structured Pydantic output and per-agent timeout", output: "Fault-isolated specialist findings" },
-  { id: "aggregate", icon: "⇲", title: "Consolidation", short: "Deduplicate and rank", description: "Merges static and agent findings, removes overlapping reports and orders evidence by severity and confidence.", input: "All analyzer and agent findings", safeguard: "Changed-line validation and deterministic ranking", output: "One consolidated review" },
-  { id: "suggest", icon: "</>", title: "Refactoring", short: "Validated suggestions", description: "Produces minimal replacement ranges and validates that Python suggestions parse before formatting GitHub suggestion blocks.", input: "Consolidated findings", safeguard: "Added lines only; raw code; syntax validation", output: "GitHub-compatible code suggestions" },
-  { id: "publish", icon: "↗", title: "Publish & persist", short: "Comment, history, evaluation", description: "Stores review history, creates an executive summary and can publish advisory inline comments when explicitly enabled.", input: "ReviewResult and PR head SHA", safeguard: "COMMENT only; never approve or merge", output: "PostgreSQL history and GitHub review" },
-];
+const SEVERITY = {
+  CRITICAL: { word: "Critical", tone: "red" },
+  HIGH: { word: "High", tone: "orange" },
+  MEDIUM: { word: "Medium", tone: "yellow" },
+  LOW: { word: "Low", tone: "grey" },
+  INFO: { word: "Info", tone: "grey" },
+};
+const JOB_STATUS = {
+  queued: { word: "Queued", tone: "grey" },
+  running: { word: "Reviewing", tone: "blue" },
+  completed: { word: "Completed", tone: "green" },
+  failed: { word: "Failed", tone: "red" },
+};
+const TRIGGERS = { dashboard: "Dashboard", webhook: "Webhook", api: "API" };
 
 const agentDefinitions = [
-  { id: "bug-hunter", name: "Bug Hunter", copy: "Correctness, security and concurrency", color: "bug" },
-  { id: "performance", name: "Performance", copy: "Complexity, memory and I/O", color: "performance" },
-  { id: "style", name: "Style / Syntax", copy: "Typing, clarity and API use", color: "style" },
-  { id: "architecture", name: "Architecture", copy: "Boundaries, scale and reliability", color: "architecture" },
+  { id: "bug-hunter", name: "Bug Hunter", copy: "Correctness, security and concurrency" },
+  { id: "performance", name: "Performance", copy: "Complexity, memory and I/O" },
+  { id: "style", name: "Style", copy: "Typing, clarity and API use" },
+  { id: "architecture", name: "Architecture", copy: "Boundaries, scale and reliability" },
 ];
+const SOURCE_NAMES = { ruff: "Ruff", semgrep: "Semgrep", ...Object.fromEntries(agentDefinitions.map((agent) => [agent.id, agent.name])) };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (character) => ({
-  "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
-})[character]);
+
+// Safe DOM builder: strings become text nodes, never markup.
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props || {})) {
+    if (value == null || value === false) continue;
+    if (key === "class") node.className = value;
+    else if (key === "text") node.textContent = value;
+    else if (key.startsWith("on") && typeof value === "function") node.addEventListener(key.slice(2), value);
+    else if (key === "dataset") Object.assign(node.dataset, value);
+    else node.setAttribute(key, value === true ? "" : String(value));
+  }
+  append(node, children);
+  return node;
+}
+
+function append(node, children) {
+  for (const child of children.flat(Infinity)) {
+    if (child == null || child === false) continue;
+    node.appendChild(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+
+function fill(node, ...children) {
+  node.replaceChildren();
+  return append(node, children);
+}
+
+function statusEl(word, tone = "grey", extra = "") {
+  return el("span", { class: `status ${tone} ${extra}`.trim(), text: word });
+}
+
+const plural = (count, word, many = `${word}s`) => `${count} ${count === 1 ? word : many}`;
+const joinWords = (items) => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`);
 
 function errorText(payload, status) {
   const detail = payload && payload.detail;
@@ -52,9 +96,9 @@ function errorText(payload, status) {
       return where ? `${where}: ${item.msg}` : String(item.msg || item);
     }).join("; ");
   }
-  if (status === 401) return "Sign in with GitHub first";
+  if (status === 401) return "Sign in first";
   if (status === 404) return "Not found";
-  return status ? `Request failed (HTTP ${status})` : "Request failed";
+  return status ? `The request failed (HTTP ${status})` : "The request failed";
 }
 
 async function api(url, options = {}) {
@@ -83,7 +127,8 @@ function parseTime(value) {
 }
 
 function formatDuration(ms) {
-  if (ms == null || ms < 0) return "—";
+  if (ms == null || ms < 0) return "";
+  if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`;
   const seconds = Math.round(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
   return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
@@ -91,7 +136,7 @@ function formatDuration(ms) {
 
 function timeAgo(value) {
   const time = parseTime(value);
-  if (time == null) return "—";
+  if (time == null) return "";
   const seconds = Math.max(0, Math.round((Date.now() - time) / 1000));
   if (seconds < 60) return "just now";
   if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
@@ -101,35 +146,51 @@ function timeAgo(value) {
 
 function formatDate(value) {
   const time = parseTime(value);
-  return time == null ? "—" : new Date(time).toLocaleString();
+  return time == null ? "" : new Date(time).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
+function formatPercent(value) {
+  return typeof value === "number" ? `${Math.round(value * 100)}%` : "";
+}
+
+const shortSha = (sha, size = 7) => (sha ? String(sha).slice(0, size) : "");
+
+// Navigation ---------------------------------------------------------------------------------
 function setView(view) {
+  if (!VIEWS.includes(view)) view = "overview";
   $$(".view").forEach((item) => item.classList.toggle("active", item.id === `view-${view}`));
-  $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
-  const titles = { overview: "Review command center", workflow: "Pipeline workflow", findings: "Review findings", history: "Review history", configuration: "Runtime configuration" };
-  $("#pageTitle").textContent = titles[view] || "PRISM";
-  window.location.hash = view;
+  $$(".nav-row").forEach((item) => {
+    const active = item.dataset.view === view;
+    item.classList.toggle("active", active);
+    if (active) item.setAttribute("aria-current", "page"); else item.removeAttribute("aria-current");
+  });
+  document.title = view === "overview" ? "PRISM · Pull request review" : `${VIEW_TITLES[view]} · PRISM`;
+  if (window.location.hash.slice(1) !== view) history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${view}`);
+  window.scrollTo(0, 0);
   if (view === "history") loadJobs();
 }
 
 function notify(message, type = "info") {
   const node = $("#notice");
-  node.textContent = message;
-  node.className = `notice ${type === "error" ? "error" : type === "success" ? "success" : ""}`;
+  const tone = type === "error" ? "red" : type === "success" ? "green" : "blue";
+  fill(node, statusEl(message, tone), el("button", { type: "button", class: "toast-close", "aria-label": "Dismiss message", text: "Dismiss", onclick: () => node.classList.add("hidden") }));
+  node.setAttribute("role", type === "error" ? "alert" : "status");
+  node.classList.remove("hidden");
   clearTimeout(notify.timer);
-  notify.timer = setTimeout(() => node.classList.add("hidden"), 8000);
+  notify.timer = setTimeout(() => node.classList.add("hidden"), type === "error" ? 12000 : 6000);
 }
 
+// Launcher -----------------------------------------------------------------------------------
 function setMode(mode) {
   state.mode = mode;
-  $("#demoToggle").classList.toggle("active", mode === "demo");
-  $("#liveToggle").classList.toggle("active", mode === "live");
-  $("#demoToggle").setAttribute("aria-pressed", String(mode === "demo"));
-  $("#liveToggle").setAttribute("aria-pressed", String(mode === "live"));
+  [["#demoToggle", "demo"], ["#liveToggle", "live"]].forEach(([selector, value]) => {
+    const button = $(selector);
+    button.classList.toggle("active", mode === value);
+    button.setAttribute("aria-checked", String(mode === value));
+    button.tabIndex = mode === value ? 0 : -1;
+  });
   $("#demoControls").classList.toggle("hidden", mode !== "demo");
   $("#liveControls").classList.toggle("hidden", mode !== "live");
-  $("#modeChip").textContent = mode === "demo" ? "SAFE SANDBOX" : "GITHUB REST API";
   updateLauncher();
   if (mode === "live") renderLive();
 }
@@ -139,47 +200,34 @@ function selectedDemo() {
 }
 
 function updateLauncher() {
-  if (state.mode === "live") {
-    $("#launcherTitle").textContent = "Review a live GitHub pull request";
-    $("#launcherCopy").textContent = "Fetch a real pull request, run the complete evidence-grounded pipeline and persist its review history.";
-    return;
-  }
   const demo = selectedDemo();
-  $("#launcherTitle").textContent = demo ? `Run: ${demo.title}` : "Run the complete demo review";
-  $("#launcherCopy").textContent = demo ? demo.subtitle : "Choose a trusted case to exercise the local review pipeline.";
-  if (demo) {
-    $("#demoFileIcon").textContent = demo.icon;
-    $("#demoFileName").textContent = demo.filename;
-    $("#demoFileMeta").textContent = `${demo.line_count} added lines · ${demo.coverage.join(" · ")}`;
-  }
+  $("#demoFileMeta").textContent = demo ? `${demo.filename}, ${plural(demo.line_count, "line")} added` : "Loading examples";
 }
 
 function renderDemoCases() {
-  const colors = { coral: "var(--coral)", amber: "var(--amber)", cyan: "var(--cyan)", violet: "var(--violet)", green: "var(--green)" };
   const picker = $("#demoCasePicker");
-  picker.innerHTML = "";
-  state.demoCases.forEach((demo) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `demo-case ${demo.case_id === state.selectedCase ? "active" : ""}`;
-    button.style.setProperty("--case-color", colors[demo.accent] || "var(--teal)");
-    button.setAttribute("role", "radio");
-    button.setAttribute("aria-checked", String(demo.case_id === state.selectedCase));
-    button.title = demo.subtitle;
-    button.innerHTML = `<b>${escapeHtml(demo.icon)}</b><strong>${escapeHtml(demo.title)}</strong><small>${escapeHtml(demo.coverage[0])}</small>`;
-    button.addEventListener("click", () => {
-      state.selectedCase = demo.case_id;
-      renderDemoCases();
-      updateLauncher();
-    });
-    picker.appendChild(button);
-  });
+  fill(picker, state.demoCases.map((demo) => {
+    const checked = demo.case_id === state.selectedCase;
+    return el("button", {
+      type: "button", role: "radio", class: "choice", "aria-checked": String(checked), tabindex: checked ? "0" : "-1",
+      dataset: { case: demo.case_id },
+      onclick: () => chooseCase(demo.case_id),
+    },
+    el("span", { class: "choice-text" }, el("span", { class: "choice-title", text: demo.title }), el("span", { class: "choice-sub", text: demo.subtitle })),
+    el("span", { class: "choice-check", "aria-hidden": "true" }));
+  }));
   updateLauncher();
+}
+
+function chooseCase(caseId, focus = false) {
+  state.selectedCase = caseId;
+  renderDemoCases();
+  if (focus) $(`[data-case="${CSS.escape(caseId)}"]`)?.focus();
 }
 
 async function loadDemoCases() {
   const response = await fetch("/dashboard/demo-cases");
-  if (!response.ok) throw new Error("Demo cases are unavailable");
+  if (!response.ok) throw new Error("The bundled examples could not be loaded.");
   state.demoCases = await response.json();
   if (!state.demoCases.some((item) => item.case_id === state.selectedCase)) {
     state.selectedCase = state.demoCases[0]?.case_id || "full-spectrum";
@@ -187,252 +235,416 @@ async function loadDemoCases() {
   renderDemoCases();
 }
 
-function renderPipeline(active = -1, failed = false) {
-  const container = $("#pipeline");
-  container.innerHTML = "";
-  workflowStages.forEach((stage, index) => {
-    const item = document.createElement("div");
-    item.className = "pipeline-step";
-    if (index < active || active === workflowStages.length) item.classList.add("done");
-    if (index === active) item.classList.add(failed ? "failed" : "active");
-    item.innerHTML = `<div class="pipeline-node">${stage.icon}</div><small>${stage.title}</small>`;
-    container.appendChild(item);
-  });
-}
-
-function renderWorkflow() {
-  const map = $("#workflowMap");
-  map.innerHTML = "";
-  workflowStages.forEach((stage, index) => {
-    const button = document.createElement("button");
-    button.className = `workflow-card ${index === 0 ? "active" : ""}`;
-    button.innerHTML = `<span class="workflow-number">STAGE ${String(index + 1).padStart(2, "0")}</span><h3>${stage.title}</h3><p>${stage.short}</p>`;
-    button.addEventListener("click", () => {
-      $$(".workflow-card", map).forEach((card) => card.classList.remove("active"));
-      button.classList.add("active");
-      renderWorkflowDetail(stage);
-    });
-    map.appendChild(button);
-  });
-  renderWorkflowDetail(workflowStages[0]);
-}
-
-function renderWorkflowDetail(stage) {
-  $("#workflowDetail").innerHTML = `<div class="detail-icon">${stage.icon}</div><h3>${stage.title}</h3><p>${stage.description}</p><ul class="detail-list"><li><strong>INPUT</strong><span>${stage.input}</span></li><li><strong>SAFEGUARD</strong><span>${stage.safeguard}</span></li><li><strong>OUTPUT</strong><span>${stage.output}</span></li></ul>`;
-}
-
-function renderAgents(runs = []) {
-  const container = $("#agentGrid");
-  container.innerHTML = "";
-  agentDefinitions.forEach((definition) => {
-    const run = runs.find((item) => item.agent === definition.id);
-    const card = document.createElement("article");
-    card.className = `agent-card ${run ? run.status : ""}`;
-    card.innerHTML = `<div class="agent-card-head"><div><span class="agent-dot ${definition.color}"></span><h4>${definition.name}</h4></div><span class="agent-status">${run ? run.status.replace("_", " ") : "standing by"}</span></div><p>${definition.copy}</p><div class="agent-stats"><span>${run ? `${run.finding_count} findings` : "No run"}</span><span>${run ? `${run.duration_ms} ms` : "—"}</span></div>`;
-    container.appendChild(card);
-  });
-}
-
+// Readiness and configuration ------------------------------------------------------------------
 function renderReadiness(status) {
-  const checks = [
-    ["GitHub connection", status.github_connected, status.github_connected ? "server credentials ready" : "required for live mode"],
-    ["LLM specialists", status.llm_connected, status.llm_connected ? "connected" : "offline heuristics"],
-    ["Ruff analyzer", status.analyzers.ruff, "deterministic"],
-    ["Semgrep analyzer", status.analyzers.semgrep, "security rules"],
-    ["GitHub sign-in", status.oauth_configured, status.oauth_configured ? "configured" : "not configured"],
-    ["Review publishing", status.publishing_enabled, status.publishing_enabled ? "enabled" : "safe / disabled"],
+  const rows = [
+    ["GitHub", status.github_connected ? ["Server access", "green"] : status.oauth_configured ? ["Through sign-in", "green"] : ["Not connected", "orange"]],
+    ["Language model", status.llm_connected ? [status.llm_model || "Connected", "green"] : ["Offline rules", "orange"]],
+    ["Ruff", status.analyzers.ruff ? ["Installed", "green"] : ["Missing", "red"]],
+    ["Semgrep", status.analyzers.semgrep ? ["Installed", "green"] : ["Missing", "red"]],
+    ["History", [status.database === "postgresql" ? "PostgreSQL" : "SQLite", "green"]],
+    ["Posting to GitHub", status.publishing_enabled ? ["Allowed", "green"] : ["Off", "grey"]],
   ];
-  const essential = [status.analyzers.ruff, status.analyzers.semgrep, status.database, status.github_connected || status.oauth_configured, status.llm_connected];
-  const score = Math.round((essential.filter(Boolean).length / essential.length) * 100);
-  $("#readinessScore").textContent = `${score}%`;
-  $("#readinessList").innerHTML = checks.map(([name, ok, note]) => `<div class="readiness-item"><span>${name}</span><span class="${ok ? "ok" : "missing"}">${ok ? "●" : "○"} ${note}</span></div>`).join("");
+  fill($("#readinessList"), rows.map(([name, [word, tone]]) => el("li", { class: "row" },
+    el("span", { class: "row-main" }, el("span", { class: "row-title", text: name })),
+    el("span", { class: "row-end" }, statusEl(word, tone)))));
+  // What a live review needs. Each entry reflects real server state; nothing is assumed ready.
+  const essential = [
+    ["GitHub access", status.github_connected || status.oauth_configured],
+    ["a language model", status.llm_connected],
+    ["Ruff", status.analyzers.ruff],
+    ["Semgrep", status.analyzers.semgrep],
+  ];
+  const missing = essential.filter(([, ok]) => !ok).map(([name]) => name);
+  $("#readinessSummary").textContent = missing.length
+    ? `Not set up: ${joinWords(missing)}. Demo reviews work without ${missing.length === 1 ? "it" : "them"}.`
+    : "Everything a live review needs is set up.";
 }
 
 function renderConfiguration(status) {
-  const cards = [
-    ["GH", "GitHub", status.github_connected, status.github_connected ? "Authenticated for live ingestion" : "Add GitHub token or App credentials", "GITHUB_TOKEN / GITHUB_APP_ID"],
-    ["AI", "LLM provider", status.llm_connected, status.llm_connected ? "Structured specialist outputs enabled" : "Using deterministic offline agents", "LLM_API_KEY"],
-    ["DB", "Review history", true, `${status.database.toUpperCase()} database configured`, "DATABASE_URL"],
-    ["R", "Ruff", status.analyzers.ruff, "Python quality and security diagnostics", "ruff check"],
-    ["S", "Semgrep", status.analyzers.semgrep, "Local deterministic security rules", "semgrep scan"],
-    ["WH", "GitHub webhook", status.webhook_configured, status.webhook_configured ? "Signature validation configured" : "Add a webhook signing secret", "GITHUB_WEBHOOK_SECRET"],
-    ["↗", "Publishing permission", status.publishing_enabled, status.publishing_enabled ? "Server allows advisory COMMENT reviews, only when ticked per review" : "Disabled: reviews can never be posted to GitHub", "PUBLISH_REVIEWS"],
-    ["WP", "Webhook auto-publish", status.webhook_auto_publish, status.webhook_auto_publish ? "Webhook reviews are posted automatically" : "Off: webhook reviews are stored, not posted", "WEBHOOK_AUTO_PUBLISH"],
-    ["ID", "GitHub sign-in (OAuth)", status.oauth_configured, status.oauth_configured ? "Users sign in to pick repositories" : "Not configured: live reviews use server credentials", "GITHUB_OAUTH_CLIENT_ID / _SECRET"],
-    ["LM", "Model", Boolean(status.llm_model), status.llm_model ? `Using ${status.llm_model}` : "No model: offline heuristics", "LLM_MODEL"],
-    ["≥", "Minimum confidence", true, `Findings below ${formatPercent(status.min_confidence)} are dropped`, "MIN_CONFIDENCE"],
-    ["∥", "Review concurrency", true, `${status.review_concurrency ?? "?"} review job${status.review_concurrency === 1 ? "" : "s"} at a time`, "REVIEW_CONCURRENCY"],
-    ["4×", "Agent graph", true, `${status.agents.length} concurrent specialists`, "LangGraph fan-out / fan-in"],
-    ["EV", "Evaluation", true, "Ready for held-out labelled JSONL", "pr-reviewer-evaluate"],
+  const on = (ok, yes = "On", no = "Off") => (ok ? [yes, "green"] : [no, "grey"]);
+  const groups = [
+    ["GitHub", [
+      ["Server access", on(status.github_connected, "Set up", "Not set up"), "GITHUB_TOKEN or GITHUB_APP_ID", "Lets the server fetch pull requests itself."],
+      ["Sign in with GitHub", on(status.oauth_configured, "Set up", "Not set up"), "GITHUB_OAUTH_CLIENT_ID", "People pick from their own repositories."],
+      ["Demo accounts", on(status.password_login_enabled, "Set up", "Not set up"), "DEMO_ACCOUNTS", "Username and password sign-in for reviewers without GitHub."],
+      ["Webhook", on(status.webhook_configured, "Set up", "Not set up"), "GITHUB_WEBHOOK_SECRET", "Signed pull request events start reviews automatically."],
+      ["Posting reviews", on(status.publishing_enabled, "Allowed", "Off"), "PUBLISH_REVIEWS", "Only when asked for a single review, and only as comments."],
+      ["Post webhook reviews", on(status.webhook_auto_publish), "WEBHOOK_AUTO_PUBLISH", "Webhook reviews are posted without anyone asking."],
+    ]],
+    ["Analysis", [
+      ["Review mode", [status.review_mode === "full" ? "Full" : status.review_mode === "focused" ? "Focused" : String(status.review_mode || "Not reported"), null], "REVIEW_MODE",
+        status.review_mode === "full"
+          ? "Every finding from every tool and agent is shown."
+          : status.review_mode === "focused"
+            ? "Only likely defects are shown: security, bug and error rules, confident agent findings, and a few per file."
+            : null],
+      ["Language model", status.llm_connected ? [status.llm_model || "Connected", "green"] : ["Offline rules", "orange"], "LLM_API_KEY, LLM_MODEL", "Without one, the agents use deterministic rules."],
+      ["Ruff", on(status.analyzers.ruff, "Installed", "Missing"), null, "Python lint and security rules."],
+      ["Semgrep", on(status.analyzers.semgrep, "Installed", "Missing"), null, "The project's local defect and security rules."],
+      ["Specialist agents", [joinWords(status.agents.map((id) => SOURCE_NAMES[id] || id)), null], null, null],
+      ["Minimum confidence", [formatPercent(status.min_confidence), null], "MIN_CONFIDENCE", "Findings below this are dropped."],
+      ["Reviews at once", [String(status.review_concurrency ?? ""), null], "REVIEW_CONCURRENCY", null],
+    ]],
+    ["Storage and safety", [
+      ["Review history", [status.database === "postgresql" ? "PostgreSQL" : "SQLite", null], "DATABASE_URL", null],
+      ["Pull request code", ["Parsed, never run", null], null, "Changed files are read and parsed. Nothing from the pull request is imported or executed."],
+      ["Actions on GitHub", ["Comments only", null], null, "PRISM never approves, requests changes or merges."],
+    ]],
   ];
-  $("#configGrid").innerHTML = cards.map(([icon, name, ok, copy, code]) => `<article class="surface config-card"><div class="config-card-head"><span class="config-card-icon">${icon}</span><span class="config-state ${ok ? "ok" : ""}">${ok ? "READY" : "OPTIONAL"}</span></div><h3>${name}</h3><p>${copy}</p><code>${code}</code></article>`).join("");
-}
-
-function formatPercent(value) {
-  return typeof value === "number" ? `${Math.round(value * 100)}%` : "—";
+  fill($("#configGroups"), groups.map(([title, rows]) => el("section", {},
+    el("h2", { class: "section-title", text: title }),
+    el("ul", { class: "inset" }, rows.map(([name, [word, tone], env, note]) => el("li", { class: "row" },
+      el("span", { class: "row-main" }, el("span", { class: "row-title", text: name }), note ? el("span", { class: "row-sub", text: note }) : null),
+      el("span", { class: "detail-value" }, tone ? statusEl(word, tone) : el("span", { class: "plain", text: word }), env ? el("span", { class: "env", text: env }) : null)))))));
 }
 
 async function loadStatus() {
   try {
     state.status = await api("/dashboard/status");
-    $("#engineState").textContent = `${state.status.database} · API ready`;
     renderReadiness(state.status);
     renderConfiguration(state.status);
     renderLive();
+    return true;
   } catch (error) {
-    $("#engineState").textContent = "Connection failed";
+    $("#readinessSummary").textContent = `Could not check this server: ${error.message}`;
     notify(error.message, "error");
+    return false;
   }
 }
 
-function activityEntries(result) {
-  const entries = result.demo_case ? [["Scenario selected", result.demo_case.title]] : [];
-  entries.push(
-    ["Diff parsed", `${result.files.length} changed file${result.files.length === 1 ? "" : "s"} mapped`],
-    ["Context extracted", "Changed lines grounded in AST symbols"],
-    ["Static evidence collected", `${result.findings.filter((f) => ["ruff", "semgrep"].includes(f.source)).length} deterministic matches`],
-    ["Specialists consolidated", `${result.agent_runs.filter((run) => run.status === "success").length}/${result.agent_runs.length} agents completed`],
-    ["Review assembled", `${result.findings.length} deduplicated findings ranked`],
-  );
-  return entries;
+// Findings -----------------------------------------------------------------------------------
+function isStatic(finding) {
+  return finding.source === "ruff" || finding.source === "semgrep";
 }
 
-function renderResult(result) {
-  state.result = result;
+function ruleName(ruleId) {
+  return ruleId ? String(ruleId).split(".").pop() : "";
+}
+
+function displayTitle(finding) {
+  // Static tools title findings "ruff: S307"; their message is the readable sentence.
+  if (/^(ruff|semgrep):/i.test(finding.title || "") && finding.message) return finding.message;
+  return finding.title || finding.message;
+}
+
+function sourceLabel(finding) {
+  const name = SOURCE_NAMES[finding.source] || finding.source;
+  return isStatic(finding) && finding.rule_id ? `${name} ${ruleName(finding.rule_id)}` : name;
+}
+
+function fileFor(path) {
+  return (state.result?.files || []).find((file) => file.path === path);
+}
+
+function newLines(file, from, to) {
+  if (!file) return [];
+  return (file.lines || []).filter((line) => line.new_line != null && line.kind !== "DELETE" && line.new_line >= from && line.new_line <= to);
+}
+
+function contextFor(finding) {
+  const context = fileFor(finding.path)?.contexts?.[String(finding.line)];
+  if (!context || !context.symbol) return "";
+  return context.node_type === "ClassDef" ? `in class ${context.symbol}` : `in ${context.symbol}()`;
+}
+
+function codeLine(number, sign, text, kind = "") {
+  return el("div", { class: `code-line ${kind}`.trim() },
+    el("span", { class: "ln", text: number == null ? "" : String(number) }),
+    el("span", { class: "sign", text: sign }),
+    el("span", { text: text === "" ? " " : text }));
+}
+
+function evidenceText(finding) {
+  // Semgrep rule ids carry the rule file's absolute path; show only the rule's own name.
+  const text = finding.evidence || "";
+  return finding.rule_id && finding.rule_id.includes(".") ? text.split(finding.rule_id).join(ruleName(finding.rule_id)) : text;
+}
+
+function evidenceBlock(finding) {
+  const end = finding.end_line || finding.line;
+  const lines = newLines(fileFor(finding.path), finding.line - 2, end + 2);
+  const block = el("div", {}, el("div", { class: "block-label" }, el("span", { text: "Evidence" })));
+  if (lines.length) {
+    block.appendChild(el("div", { class: "code", role: "region", "aria-label": `Code at ${finding.path} line ${finding.line}`, tabindex: "0" },
+      lines.map((line) => codeLine(line.new_line, line.kind === "ADD" ? "+" : "", line.text, line.new_line >= finding.line && line.new_line <= end ? "mark" : ""))));
+    if (finding.evidence) block.appendChild(el("p", { class: "block-text", text: evidenceText(finding) }));
+  } else {
+    block.appendChild(el("div", { class: "code" }, el("div", { class: "code-plain", text: evidenceText(finding) || "No evidence text was recorded." })));
+  }
+  return block;
+}
+
+function suggestionBlock(finding) {
+  const suggestion = finding.suggestion;
+  if (!suggestion) return null;
+  const current = newLines(fileFor(finding.path), suggestion.start_line, suggestion.end_line);
+  const replacement = String(suggestion.replacement ?? "").replace(/\n$/, "").split("\n");
+  const well = el("div", { class: "code", role: "region", "aria-label": "Suggested replacement", tabindex: "0" },
+    current.map((line) => codeLine(line.new_line, "−", line.text, "del")),
+    replacement.map((text, index) => codeLine(suggestion.start_line + index, "+", text, "add")));
+  return el("div", {},
+    el("div", { class: "block-label" },
+      el("span", { text: current.length ? suggestion.end_line !== suggestion.start_line ? `Suggested fix, lines ${suggestion.start_line}–${suggestion.end_line}` : `Suggested fix, line ${suggestion.start_line}` : "Suggested replacement" }),
+      suggestion.validated ? statusEl("Validated", "green") : statusEl("Not validated", "grey")),
+    well,
+    suggestion.rationale ? el("p", { class: "block-text", text: suggestion.rationale }) : null);
+}
+
+function sortedFindings() {
+  return (state.result?.findings || [])
+    .map((finding, index) => ({ finding, index }))
+    .sort((a, b) => (SEVERITY_ORDER[a.finding.severity] ?? 9) - (SEVERITY_ORDER[b.finding.severity] ?? 9) || (b.finding.confidence || 0) - (a.finding.confidence || 0) || a.index - b.index);
+}
+
+function renderFindings() {
+  const list = $("#findingsList");
+  if (!state.result) {
+    fill(list, el("li", { class: "empty" },
+      el("h2", { text: "No review loaded" }),
+      el("p", { text: "Run an example or review a pull request from Overview, or open a past review from History." }),
+      el("button", { type: "button", class: "btn btn-small", text: "Go to Overview", onclick: () => setView("overview") })));
+    return;
+  }
+  const entries = sortedFindings().filter(({ finding }) => state.severity === "ALL" || finding.severity === state.severity);
+  if (!state.result.findings.length) {
+    fill(list, el("li", { class: "empty" },
+      el("h2", { text: "Nothing to fix" }),
+      el("p", { text: "No tool or agent found a problem on the changed lines." })));
+    return;
+  }
+  fill(list, entries.map(({ finding, index }) => {
+    const id = `finding-${index}`;
+    const open = state.expanded.has(index);
+    const severity = SEVERITY[finding.severity] || { word: finding.severity, tone: "grey" };
+    const meta = [
+      el("span", { class: "loc", text: `${finding.path}:${finding.line}${finding.end_line && finding.end_line !== finding.line ? `–${finding.end_line}` : ""}` }),
+      el("span", { text: sourceLabel(finding) }),
+      isStatic(finding) && finding.category ? el("span", { text: finding.category }) : null,
+      contextFor(finding) ? el("span", { text: contextFor(finding) }) : null,
+      typeof finding.confidence === "number" ? el("span", { text: `${formatPercent(finding.confidence)} confidence` }) : null,
+    ].filter(Boolean);
+    const metaNodes = meta.flatMap((node, position) => (position ? [el("span", { "aria-hidden": "true", text: "·" }), node] : [node]));
+    const title = displayTitle(finding);
+    const body = el("div", { class: "finding-body", id, hidden: !open },
+      finding.message && finding.message !== title ? el("p", { text: finding.message }) : null,
+      evidenceBlock(finding),
+      suggestionBlock(finding),
+      finding.rule_id && !isStatic(finding) ? el("p", { class: "job-meta" }, "Rule ", el("code", { text: finding.rule_id })) : null);
+    const toggle = el("button", {
+      type: "button", class: "row stack finding-toggle", "aria-expanded": String(open), "aria-controls": id,
+      onclick: () => {
+        const nowOpen = !state.expanded.has(index);
+        if (nowOpen) state.expanded.add(index); else state.expanded.delete(index);
+        toggle.setAttribute("aria-expanded", String(nowOpen));
+        body.hidden = !nowOpen;
+      },
+    },
+    el("span", { class: "row-main" }, el("span", { class: "row-title", text: title }), el("span", { class: "finding-meta" }, metaNodes)),
+    el("span", { class: "row-end" }, statusEl(severity.word, severity.tone), el("span", { class: "chevron", "aria-hidden": "true" })));
+    return el("li", {}, toggle, body);
+  }));
+}
+
+function renderSeverityControls() {
+  const findings = state.result?.findings || [];
+  const counts = {};
+  findings.forEach((finding) => { counts[finding.severity] = (counts[finding.severity] || 0) + 1; });
+  const present = Object.keys(SEVERITY).filter((key) => counts[key]);
+  // One quiet figure row: only severities that occur.
+  const figures = $("#severityFigures");
+  fill(figures, present.map((key) => el("div", { class: "figure" },
+    statusEl(SEVERITY[key].word, SEVERITY[key].tone),
+    el("strong", { text: String(counts[key]) }))));
+  figures.classList.toggle("hidden", !present.length);
+  if (!present.includes(state.severity)) state.severity = "ALL";
+  $$("#severityFilters button").forEach((button) => {
+    const key = button.dataset.severity;
+    button.classList.toggle("hidden", key !== "ALL" && !counts[key]);
+    const active = key === state.severity;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-checked", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  $("#findingsListHead").classList.toggle("hidden", present.length < 2);
+}
+
+function renderSummary(result) {
+  const box = $("#reviewSummary");
+  const findings = result.findings;
+  const parts = [];
+  if (!findings.length) {
+    parts.push(el("p", { class: "summary-lead", text: `No problems found in ${plural(result.files.length, "changed file")}.` }));
+  } else {
+    const elevated = findings.filter((finding) => ["CRITICAL", "HIGH"].includes(finding.severity)).length;
+    const top = sortedFindings()[0].finding;
+    parts.push(el("p", { class: "summary-lead", text: `${plural(findings.length, "finding")} in ${plural(result.files.length, "changed file")}${elevated ? `, ${elevated} high or critical` : ""}. Start with “${displayTitle(top)}” at ${top.path}:${top.line}.` }));
+    const fixes = findings.filter((finding) => finding.suggestion);
+    const validated = fixes.filter((finding) => finding.suggestion.validated).length;
+    if (fixes.length) parts.push(el("p", { class: "summary-line", text: `${plural(fixes.length, "finding comes", "findings come")} with a suggested fix; ${validated === fixes.length ? (fixes.length === 1 ? "it parses" : "all parse") : `${validated} of ${fixes.length} parse`} as valid Python.` }));
+  }
+  if (result.published) parts.push(el("p", { class: "summary-line ok", text: "Posted to GitHub as one comment-only review." }));
+  else if (result.publish_error) parts.push(el("p", { class: "summary-line bad", text: `Posting to GitHub failed: ${result.publish_error}` }));
+  if (result.warnings.length) parts.push(el("ul", { class: "summary-warnings", "aria-label": "Warnings" }, result.warnings.map((warning) => el("li", { text: warning }))));
+  fill(box, parts);
+  box.classList.remove("hidden");
+}
+
+function renderAgents(runs) {
+  const list = $("#agentList");
+  fill(list, agentDefinitions.map((definition) => {
+    const run = runs.find((item) => item.agent === definition.id);
+    const status = !run ? ["Did not run", "grey"] : run.status === "success" ? ["Finished", "green"] : run.status === "timed_out" ? ["Timed out", "orange"] : ["Failed", "red"];
+    const figures = run ? `${plural(run.finding_count, "finding")}, ${run.duration_ms < 1 ? "under 1 ms" : `${run.duration_ms} ms`}` : "";
+    return el("li", { class: "row" },
+      el("span", { class: "row-main" },
+        el("span", { class: "row-title", text: definition.name }),
+        el("span", { class: "row-sub", text: run && run.error ? run.error : run ? `${definition.copy}. ${figures}.` : definition.copy })),
+      el("span", { class: "row-end" }, statusEl(status[0], status[1])));
+  }));
+  $("#agentSection").classList.toggle("hidden", !runs.length);
+}
+
+function renderResult(result, origin) {
   result.files = result.files || [];
   result.findings = result.findings || [];
   result.warnings = result.warnings || [];
   result.agent_runs = result.agent_runs || [];
-  const additions = result.files.reduce((sum, file) => sum + (file.lines || []).filter((line) => line.kind === "ADD").length, 0);
-  const elevated = result.findings.filter((finding) => ["CRITICAL", "HIGH"].includes(finding.severity)).length;
-  const fixes = result.findings.filter((finding) => finding.suggestion && finding.suggestion.validated).length;
-  $("#filesMetric").textContent = result.files.length;
-  $("#linesMetric").textContent = `${additions} added lines mapped`;
-  $("#findingsMetric").textContent = result.findings.length;
-  $("#severityMetric").textContent = `${elevated} high-priority`;
-  $("#agentsMetric").textContent = `${result.agent_runs.filter((run) => run.status === "success").length}/${result.agent_runs.length}`;
-  $("#fixesMetric").textContent = fixes;
-  $("#findingBadge").textContent = result.findings.length;
-  renderAgents(result.agent_runs);
+  state.result = result;
+  state.origin = origin || null;
+  state.severity = "ALL";
+  state.expanded = new Set();
+  const top = sortedFindings()[0];
+  if (top) state.expanded.add(top.index);
+  $("#findingCount").textContent = result.findings.length ? String(result.findings.length) : "";
+  $("#findingsSource").textContent = origin?.label || "Loaded review";
+  renderSummary(result);
+  renderSeverityControls();
   renderFindings();
-  $("#activityFeed").innerHTML = activityEntries(result).map(([title, copy]) => `<div class="activity-item"><i></i><div><strong>${title}</strong><small>${copy}</small></div></div>`).join("");
-  renderMeta(result);
+  renderAgents(result.agent_runs);
 }
 
-function renderMeta(result) {
-  const box = $("#reviewMeta");
-  if (!result) { box.classList.add("hidden"); return; }
-  const parts = [];
-  if (result.summary) parts.push(`<div><span class="section-kicker">SUMMARY</span><p class="meta-summary">${escapeHtml(result.summary)}</p></div>`);
-  if (result.head_sha) parts.push(`<p class="meta-line">Reviewed commit <code>${escapeHtml(result.head_sha.slice(0, 10))}</code></p>`);
-  if (result.published) parts.push(`<p class="meta-line ok">Advisory comments were posted to GitHub as a COMMENT review.</p>`);
-  else if (result.publish_error) parts.push(`<p class="meta-line bad">Posting to GitHub failed: ${escapeHtml(result.publish_error)}</p>`);
-  if (result.warnings.length) parts.push(`<div class="meta-warnings"><span class="section-kicker">WARNINGS</span><ul>${result.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></div>`);
-  box.innerHTML = parts.join("");
-  box.classList.toggle("hidden", !parts.length);
+function clearResult() {
+  state.result = null;
+  state.origin = null;
+  state.expanded = new Set();
+  $("#findingCount").textContent = "";
+  $("#findingsSource").textContent = "No review loaded yet.";
+  ["#reviewSummary", "#severityFigures", "#findingsListHead", "#agentSection"].forEach((selector) => $(selector).classList.add("hidden"));
+  renderFindings();
 }
 
-function renderFindings() {
-  const container = $("#findingsList");
-  container.innerHTML = "";
-  if (!state.result) {
-    container.innerHTML = `<div class="empty-state"><span>◇</span><h3>No review loaded</h3><p>Run the demo or connect a live pull request to inspect findings.</p></div>`;
-    return;
-  }
-  const findings = state.result.findings
-    .filter((finding) => state.severity === "ALL" || finding.severity === state.severity)
-    .map((finding, index) => ({ finding, index }))
-    .sort((a, b) => (SEVERITY_ORDER[a.finding.severity] ?? 9) - (SEVERITY_ORDER[b.finding.severity] ?? 9) || (b.finding.confidence || 0) - (a.finding.confidence || 0) || a.index - b.index)
-    .map((entry) => entry.finding);
-  if (!findings.length) {
-    container.innerHTML = `<div class="empty-state"><span>✓</span><h3>No ${state.severity.toLowerCase()} findings</h3><p>The current review has no evidence in this severity band.</p></div>`;
-    return;
-  }
-  findings.forEach((finding) => {
-    const fragment = $("#findingTemplate").content.cloneNode(true);
-    const card = $(".finding-card", fragment);
-    const pill = $(".severity-pill", fragment);
-    pill.textContent = finding.severity;
-    pill.classList.add(finding.severity.toLowerCase());
-    $(".finding-source", fragment).textContent = finding.source;
-    $(".confidence", fragment).textContent = typeof finding.confidence === "number" ? `${Math.round(finding.confidence * 100)}% confidence` : "confidence n/a";
-    $("h3", fragment).textContent = finding.title;
-    $(".finding-message", fragment).textContent = finding.message;
-    $(".code-location code", fragment).textContent = `${finding.path}:${finding.line}${finding.end_line ? `–${finding.end_line}` : ""}${finding.rule_id ? ` · ${finding.rule_id}` : ""}`;
-    $(".evidence-block p", fragment).textContent = finding.evidence || "";
-    if (finding.suggestion) {
-      const suggestion = $(".suggestion-block", fragment);
-      suggestion.classList.remove("hidden");
-      $("code", suggestion).textContent = finding.suggestion.replacement;
-      const badge = $(".validated-badge", suggestion);
-      badge.textContent = finding.suggestion.validated ? "✓ validated" : "not validated";
-      badge.classList.toggle("ok", Boolean(finding.suggestion.validated));
-      $("p", suggestion).textContent = finding.suggestion.rationale || "";
-    }
-    container.appendChild(card);
-  });
+function originForDemo(payload) {
+  const demo = payload.demo_case || selectedDemo();
+  return { demo: true, label: demo ? `Example “${demo.title}”, ${demo.filename}. Reviewed on this server; not sent to GitHub.` : "Bundled example" };
 }
 
+function originForRecord(record, result) {
+  const sha = shortSha(record.head_sha || result.head_sha);
+  return { label: `${record.repository} #${record.pull_number}${sha ? `, commit ${sha}` : ""}` };
+}
+
+// Demo run -----------------------------------------------------------------------------------
 function setBusy(busy) {
   state.busy = busy;
   $$("#reviewForm button[type=submit], .js-live-action").forEach((button) => { button.disabled = busy; });
-  $("#runState").className = `run-state ${busy ? "running" : state.result ? "complete" : "idle"}`;
-  $("#runState").innerHTML = `<i></i>${busy ? "Analyzing" : state.result ? "Complete" : "Ready"}`;
+  $("#demoSubmit").textContent = busy && state.latest?.kind === "demo" ? "Reviewing" : "Run review";
+  $("#manualSubmit").textContent = busy && state.latest?.kind === "live" ? "Reviewing" : "Review pull request";
   renderPublishControl();
 }
 
-async function runReview() {
+async function runReview({ quiet = false } = {}) {
   if (state.busy) return;
   if (state.mode === "live") { submitLive(manualReference()); return; }
+  const demo = selectedDemo();
+  stopPolling();
+  state.demoRun = { title: demo ? demo.title : "Example", filename: demo?.filename || "", status: "running", started: Date.now(), finished: null, error: "", count: 0 };
+  state.latest = { kind: "demo" };
   setBusy(true);
-  let stage = 0;
-  renderPipeline(stage);
-  const ticker = setInterval(() => { stage = Math.min(stage + 1, workflowStages.length - 1); renderPipeline(stage); }, 650);
+  renderJob();
+  state.elapsedTimer = setInterval(updateElapsed, 200);
   try {
     const payload = await api("/dashboard/demo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ case_id: state.selectedCase }) });
-    clearInterval(ticker);
-    renderPipeline(workflowStages.length);
-    renderResult(payload);
-    notify(`${payload.demo_case ? payload.demo_case.title : "Demo"} demo completed through the local pipeline.`);
+    renderResult(payload, originForDemo(payload));
+    Object.assign(state.demoRun, { status: "completed", finished: Date.now(), count: payload.findings.length });
+    if (!quiet) notify(`Review finished: ${plural(payload.findings.length, "finding")}.`, "success");
   } catch (error) {
-    clearInterval(ticker);
-    renderPipeline(stage, true);
+    Object.assign(state.demoRun, { status: "failed", finished: Date.now(), error: error.message });
     notify(error.message, "error");
   } finally {
+    clearInterval(state.elapsedTimer);
+    state.elapsedTimer = null;
     setBusy(false);
+    renderJob();
   }
 }
 
-function rowAttrs(kind, id) {
-  return `tabindex="0" role="button" data-${kind}="${escapeHtml(id)}" aria-label="Open ${kind} ${escapeHtml(id)} in Findings"`;
+// History ------------------------------------------------------------------------------------
+function jobDuration(job) {
+  const start = parseTime(job.started_at);
+  const end = parseTime(job.finished_at);
+  return start != null && end != null ? formatDuration(end - start) : "";
 }
 
 async function loadHistory(repository) {
-  const [owner, repo] = repository.split("/");
   const rows = $("#historyRows");
-  rows.innerHTML = `<tr><td colspan="6" class="table-empty">Loading review history…</td></tr>`;
+  rows.classList.remove("hidden");
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+    fill(rows, el("li", { class: "row row-empty row-error", text: "Enter the repository as owner/name, for example octocat/hello-world." }));
+    return;
+  }
+  const [owner, repo] = repository.split("/");
+  fill(rows, el("li", { class: "row row-empty", text: "Loading reviews" }));
   try {
     const data = await api(`/history/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
-    rows.innerHTML = data.length ? data.map((item) => `<tr class="click-row" ${rowAttrs("review", item.id)}><td>#${escapeHtml(item.id)}</td><td>${escapeHtml(item.repository)}</td><td>#${escapeHtml(item.pull_number)}</td><td><code>${escapeHtml(item.head_sha ? item.head_sha.slice(0, 8) : "—")}</code></td><td>${escapeHtml(item.finding_count)}</td><td>${escapeHtml(formatDate(item.created_at))}</td></tr>`).join("") : `<tr><td colspan="6" class="table-empty">No reviews are stored for this repository yet.</td></tr>`;
+    if (!data.length) { fill(rows, el("li", { class: "row row-empty", text: `No reviews are stored for ${repository} yet.` })); return; }
+    fill(rows, data.map((item) => el("li", {}, el("button", { type: "button", class: "row", onclick: () => openStored("review", item.id), "aria-label": `Open review of ${item.repository} pull request ${item.pull_number}` },
+      el("span", { class: "row-main" },
+        el("span", { class: "row-title", text: `${item.repository} #${item.pull_number}` }),
+        el("span", { class: "row-sub", text: [plural(item.finding_count ?? 0, "finding"), item.head_sha ? `commit ${shortSha(item.head_sha)}` : "", formatDate(item.created_at)].filter(Boolean).join(" · ") })),
+      el("span", { class: "row-end" }, el("span", { class: "chevron", "aria-hidden": "true" }))))));
   } catch (error) {
-    rows.innerHTML = `<tr><td colspan="6" class="table-empty">${escapeHtml(error.message)}</td></tr>`;
+    fill(rows, el("li", { class: "row row-empty row-error", text: error.message }));
   }
 }
 
 async function loadJobs() {
   const rows = $("#jobRows");
-  if (!state.jobs) rows.innerHTML = `<tr><td colspan="7" class="table-empty">Loading jobs…</td></tr>`;
+  if (!state.jobs) fill(rows, el("li", { class: "row row-empty", text: "Loading reviews" }));
   try {
     state.jobs = await api("/jobs?limit=25");
-    rows.innerHTML = state.jobs.length ? state.jobs.map((job) => {
-      const start = parseTime(job.started_at);
-      const end = parseTime(job.finished_at);
+    if (!state.jobs.length) { fill(rows, el("li", { class: "row row-empty", text: "No live reviews yet. Start one from Overview and it will appear here." })); return; }
+    fill(rows, state.jobs.map((job) => {
+      const status = JOB_STATUS[job.status] || { word: job.status, tone: "grey" };
       const done = job.status === "completed";
-      return `<tr class="click-row${done ? "" : " static"}" ${done ? rowAttrs("job", job.id) : ""}><td><span class="status-pill ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></td><td>${escapeHtml(job.repository)}</td><td>#${escapeHtml(job.pull_number)}</td><td>${escapeHtml(job.trigger)}</td><td>${job.status === "completed" ? escapeHtml(job.finding_count ?? 0) : "—"}</td><td>${escapeHtml(formatDate(job.started_at || job.created_at))}</td><td>${start != null && end != null ? formatDuration(end - start) : "—"}</td></tr>`;
-    }).join("") : `<tr><td colspan="7" class="table-empty">No review jobs yet. Start a live review and it will appear here.</td></tr>`;
+      const facts = [
+        TRIGGERS[job.trigger] || job.trigger,
+        job.requested_by ? `by ${job.requested_by}` : "",
+        done ? plural(job.finding_count ?? 0, "finding") : "",
+        job.published ? "posted to GitHub" : "",
+        timeAgo(job.created_at),
+        jobDuration(job) ? `took ${jobDuration(job)}` : "",
+      ].filter(Boolean).join(" · ");
+      const content = [
+        el("span", { class: "row-main" },
+          el("span", { class: "row-title", text: `${job.repository} #${job.pull_number}` }),
+          el("span", { class: "row-sub", text: facts }),
+          job.status === "failed" && job.error ? el("span", { class: "row-sub row-error", text: job.error }) : null),
+        el("span", { class: "row-end" }, statusEl(status.word, status.tone), done ? el("span", { class: "chevron", "aria-hidden": "true" }) : null),
+      ];
+      return el("li", {}, done
+        ? el("button", { type: "button", class: "row stack", onclick: () => openStored("job", job.id), "aria-label": `Open review of ${job.repository} pull request ${job.pull_number}` }, content)
+        : el("div", { class: "row stack" }, content));
+    }));
   } catch (error) {
     state.jobs = null;
-    rows.innerHTML = `<tr><td colspan="7" class="table-empty">${escapeHtml(error.message)}</td></tr>`;
+    if (error.status === 401) {
+      fill(rows, el("li", { class: "row" },
+        el("span", { class: "row-main" }, el("span", { class: "row-title", text: "Sign in to see reviews" }), el("span", { class: "row-sub", text: "History is visible to signed-in people only." })),
+        el("span", { class: "row-end" }, el("button", { type: "button", class: "btn btn-small", text: "Sign in", onclick: goToSignIn }))));
+      return;
+    }
+    fill(rows, el("li", { class: "row row-empty row-error", text: error.message }));
   }
 }
 
@@ -440,9 +652,8 @@ async function openStored(kind, id) {
   try {
     const record = await api(kind === "job" ? `/jobs/${encodeURIComponent(id)}` : `/reviews/${encodeURIComponent(id)}`);
     if (!record.result) throw new Error("This review has no stored result to show.");
-    renderResult(record.result);
+    renderResult(record.result, originForRecord(record, record.result));
     setView("findings");
-    notify(`Loaded ${record.repository} #${record.pull_number} (${record.result.findings.length} finding${record.result.findings.length === 1 ? "" : "s"}).`, "success");
   } catch (error) {
     notify(error.message, "error");
   }
@@ -450,34 +661,46 @@ async function openStored(kind, id) {
 
 // Account ------------------------------------------------------------------------------------
 async function loadAuth() {
+  let ok = true;
   try {
     state.auth = await api("/auth/status");
   } catch (error) {
+    ok = false;
     state.auth = { oauth_configured: false, password_login_enabled: false, authenticated: false, user: null, failed: true };
-    notify(`Could not check sign-in state: ${error.message}`, "error");
+    notify(`Could not check sign-in: ${error.message}`, "error");
   }
   renderAccount();
   renderLive();
+  return ok;
+}
+
+function goToSignIn() {
+  setView("overview");
+  setMode("live");
+  const target = state.auth?.password_login_enabled ? $("#demoUsername") : $("#githubSignIn a");
+  target?.focus();
 }
 
 function renderAccount() {
   const area = $("#accountArea");
   const auth = state.auth;
-  if (!auth) { area.innerHTML = ""; return; }
+  if (!auth) { area.replaceChildren(); return; }
   if (auth.authenticated && auth.user) {
     const user = auth.user;
-    const avatar = /^https:\/\//.test(user.avatar_url || "") ? `<img class="user-avatar" src="${escapeHtml(user.avatar_url)}" alt="" width="30" height="30" referrerpolicy="no-referrer">` : `<span class="user-avatar fallback" aria-hidden="true">${escapeHtml((user.login || "?").slice(0, 2).toUpperCase())}</span>`;
-    const badge = user.auth_method === "password" ? `<span class="method-badge" title="Signed in with a demo account">Demo</span>` : "";
-    area.innerHTML = `${avatar}<span class="user-login" title="${escapeHtml(user.name || user.login)}">${escapeHtml(user.login)}</span>${badge}<button type="button" class="secondary-button small" id="signOutButton">Sign out</button>`;
-    $("#signOutButton").addEventListener("click", signOut);
+    const login = user.login || "?";
+    const avatar = /^https:\/\//.test(user.avatar_url || "")
+      ? el("img", { class: "avatar", src: user.avatar_url, alt: "", width: "32", height: "32", referrerpolicy: "no-referrer" })
+      : el("span", { class: "avatar", "aria-hidden": "true", text: login.slice(0, 2).toUpperCase() });
+    fill(area,
+      el("div", { class: "account-who" }, avatar,
+        el("span", { class: "account-name" }, el("strong", { text: login, title: user.name || login }), el("small", { text: user.auth_method === "password" ? "Demo account" : "GitHub" }))),
+      el("div", { class: "account-actions" }, el("button", { type: "button", class: "btn-text", id: "signOutButton", text: "Sign out", onclick: signOut })));
   } else if (auth.oauth_configured || auth.password_login_enabled) {
-    const github = auth.oauth_configured ? `<a class="secondary-button small" href="/auth/github/login">Sign in with GitHub</a>` : "";
-    const demo = auth.password_login_enabled ? `<button type="button" class="secondary-button small" id="demoSignInButton">Demo account</button>` : "";
-    area.innerHTML = github + demo;
-    const demoButton = $("#demoSignInButton");
-    if (demoButton) demoButton.addEventListener("click", () => { setMode("live"); setView("overview"); $("#demoUsername").focus(); });
+    fill(area,
+      el("span", { class: "account-name account-who-text" }, el("small", { text: "Not signed in" })),
+      el("div", { class: "account-actions" }, el("button", { type: "button", class: "btn btn-small", text: "Sign in", onclick: goToSignIn })));
   } else {
-    area.innerHTML = `<span class="account-note" title="Set GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET on the server to enable sign-in">Sign-in not configured</span>`;
+    fill(area, el("span", { class: "account-name account-who-text" }, el("small", { text: "Sign-in is not set up on this server" })));
   }
 }
 
@@ -487,6 +710,13 @@ async function signOut() {
     state.auth = { ...state.auth, authenticated: false, user: null };
     state.repos = null; state.pulls = null; state.selectedRepo = ""; state.jobs = null;
     stopPolling();
+    setBusy(false);
+    fill($("#repoList"));
+    fill($("#prList"), el("p", { class: "list-empty", text: "Choose a repository to see its open pull requests." }));
+    $("#prHeading").textContent = "Open pull requests";
+    // A live or stored review belongs to the signed-in person; the bundled example does not.
+    if (state.origin && !state.origin.demo) clearResult();
+    if (state.latest?.kind === "live") { state.job = null; state.latest = state.demoRun ? { kind: "demo" } : null; renderJob(); }
     renderAccount();
     renderLive();
     notify("Signed out.", "success");
@@ -501,7 +731,7 @@ function handleAuthRedirect() {
   if (!result) return;
   if (result === "ok") { setMode("live"); notify("Signed in with GitHub.", "success"); }
   else if (result === "denied") notify("GitHub sign-in was cancelled or denied. You are not signed in.", "error");
-  else if (result === "error") notify("GitHub sign-in failed (expired or invalid sign-in attempt). Please try again.", "error");
+  else if (result === "error") notify("GitHub sign-in failed because the attempt expired or was invalid. Please try again.", "error");
   params.delete("auth");
   const query = params.toString();
   history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
@@ -521,21 +751,32 @@ function liveAccess() {
 function renderLive() {
   const access = liveAccess();
   const notes = {
-    loading: "Checking what this server allows…",
-    "needs-signin": state.auth && state.auth.oauth_configured ? "Sign in with GitHub or a demo account to review pull requests." : "Sign in with a demo account to review pull requests.",
-    "password-user": "Signed in with a demo account. Enter the pull request below; the review uses the server's GitHub access.",
-    "signed-in": "Pick a repository, then a pull request. Reviews use your GitHub access.",
-    server: "GitHub sign-in is not configured, so reviews use the server's GitHub credentials. Enter the pull request below.",
-    unconfigured: "No GitHub access is configured on this server. Set GITHUB_TOKEN (or GITHUB_APP_ID with a private key) for server-side access, or GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET to let users sign in. You can still submit below to see the server's answer. Demo mode needs none of this.",
+    loading: "Checking what this server allows.",
+    "needs-signin": state.auth && state.auth.oauth_configured
+      ? "Sign in with GitHub to pick from your repositories, or use a demo account."
+      : "Sign in with a demo account to review a pull request.",
+    "password-user": state.status && state.status.github_connected
+      ? "Enter the pull request. The review uses this server's GitHub access."
+      : "This server has no GitHub access yet, so it will refuse live reviews until GITHUB_TOKEN or a GitHub App is set up.",
+    "signed-in": "Pick a repository, then a pull request. The review uses your GitHub access.",
+    server: "Enter the pull request. The review uses this server's GitHub access.",
+    unconfigured: "This server has no GitHub access yet. Set GITHUB_TOKEN or a GitHub App on the server, or set up GitHub sign-in. You can still submit to see the server's answer; the demo needs none of this.",
   };
   $("#liveNote").textContent = notes[access.kind];
-  $("#signInPrompt").classList.toggle("hidden", access.kind !== "needs-signin");
+  const signin = access.kind === "needs-signin";
+  $("#signInPrompt").classList.toggle("hidden", !signin);
   $("#githubSignIn").classList.toggle("hidden", !(state.auth && state.auth.oauth_configured));
   $("#passwordForm").classList.toggle("hidden", !(state.auth && state.auth.password_login_enabled));
+  $("#passwordSubmit").classList.toggle("btn-primary", !(state.auth && state.auth.oauth_configured));
   $("#pickerBlock").classList.toggle("hidden", access.kind !== "signed-in");
   const manual = $("#manualBlock");
-  manual.classList.toggle("hidden", access.kind === "needs-signin" || access.kind === "loading");
-  if (access.kind !== "signed-in" && !manual.dataset.touched) manual.open = true;
+  const ready = !signin && access.kind !== "loading";
+  manual.classList.toggle("hidden", !ready);
+  // Only GitHub users have a repository picker; everyone else always types the reference.
+  manual.classList.toggle("always-open", access.kind !== "signed-in");
+  if (access.kind !== "signed-in") manual.open = true;
+  $("#publishBox").classList.toggle("hidden", !ready);
+  $("#manualActions").classList.toggle("hidden", !ready || (access.kind === "signed-in" && !manual.open));
   renderPublishControl();
   if (access.kind === "signed-in" && state.mode === "live" && state.repos === null) loadRepos();
 }
@@ -552,8 +793,10 @@ async function passwordSignIn() {
     await api("/auth/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) });
     $("#demoPassword").value = "";
     state.repos = null; state.jobs = null;
-    await loadAuth();
-    notify("Signed in with a demo account.", "success");
+    if (await loadAuth()) {
+      notify("Signed in with a demo account.", "success");
+      $("#ownerInput").focus();
+    }
   } catch (failure) {
     $("#demoPassword").value = "";
     if (failure.status === 401) fail("That username or password is not right.");
@@ -570,23 +813,23 @@ function renderPublishControl() {
   input.disabled = !enabled || state.busy;
   if (!enabled) input.checked = false;
   $("#publishNote").textContent = !state.status
-    ? "Checking whether this server allows posting…"
+    ? "Checking whether this server allows posting."
     : enabled
-      ? "Off by default. When ticked, PRISM posts one GitHub review of type COMMENT after you confirm. It never approves, requests changes or merges."
-      : "Posting is disabled on this server (PUBLISH_REVIEWS is off), so this review will only be shown here. PRISM never approves or merges in any case.";
+      ? "Off by default. When on, you confirm first, then PRISM adds one comment-only review. It never approves or merges."
+      : "Turned off on this server (PUBLISH_REVIEWS), so results are shown here only.";
   $("#publishBox").classList.toggle("disabled", !enabled);
 }
 
 async function loadRepos() {
   const list = $("#repoList");
-  list.innerHTML = `<p class="list-empty">Loading your repositories…</p>`;
+  fill(list, el("p", { class: "list-empty", text: "Loading your repositories" }));
   try {
     state.repos = await api("/me/repos");
     state.reposError = "";
   } catch (error) {
     state.repos = null;
     state.reposError = error.message;
-    list.innerHTML = `<p class="list-empty error">${escapeHtml(error.message)}</p>`;
+    fill(list, el("p", { class: "list-empty error", text: error.message }));
     notify(`Could not load repositories: ${error.message}`, "error");
     return;
   }
@@ -598,9 +841,16 @@ function renderRepos() {
   if (state.repos === null) return;
   const term = $("#repoSearch").value.trim().toLowerCase();
   const repos = state.repos.filter((repo) => repo.full_name.toLowerCase().includes(term));
-  if (!state.repos.length) { list.innerHTML = `<p class="list-empty">No repositories found for your account.</p>`; return; }
-  if (!repos.length) { list.innerHTML = `<p class="list-empty">No repository matches “${escapeHtml(term)}”.</p>`; return; }
-  list.innerHTML = repos.map((repo) => `<button type="button" role="option" aria-selected="${repo.full_name === state.selectedRepo}" class="repo-item${repo.full_name === state.selectedRepo ? " active" : ""}" data-repo="${escapeHtml(repo.full_name)}"><strong>${escapeHtml(repo.full_name)}</strong><small>${repo.private ? "private" : "public"}${repo.language ? ` · ${escapeHtml(repo.language)}` : ""} · updated ${escapeHtml(timeAgo(repo.updated_at))}</small></button>`).join("");
+  if (!state.repos.length) { fill(list, el("p", { class: "list-empty", text: "No repositories found for your account." })); return; }
+  if (!repos.length) { fill(list, el("p", { class: "list-empty", text: `No repository matches “${term}”.` })); return; }
+  fill(list, repos.map((repo) => {
+    const selected = repo.full_name === state.selectedRepo;
+    return el("button", { type: "button", role: "option", class: "choice", "aria-selected": String(selected), dataset: { repo: repo.full_name } },
+      el("span", { class: "choice-text" },
+        el("span", { class: "choice-title", text: repo.full_name }),
+        el("span", { class: "choice-sub", text: [repo.private ? "Private" : "Public", repo.language, repo.updated_at ? `updated ${timeAgo(repo.updated_at)}` : ""].filter(Boolean).join(" · ") })),
+      el("span", { class: "choice-check", "aria-hidden": "true" }));
+  }));
 }
 
 async function selectRepo(fullName) {
@@ -618,7 +868,7 @@ async function loadPulls() {
   if (!state.selectedRepo) return;
   const target = state.selectedRepo;
   const list = $("#prList");
-  list.innerHTML = `<p class="list-empty">Loading open pull requests…</p>`;
+  fill(list, el("p", { class: "list-empty", text: "Loading open pull requests" }));
   const [owner, repo] = target.split("/");
   try {
     const pulls = await api(`/me/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=open`);
@@ -626,7 +876,7 @@ async function loadPulls() {
     state.pulls = pulls;
   } catch (error) {
     if (target !== state.selectedRepo) return;
-    list.innerHTML = `<p class="list-empty error">${escapeHtml(error.message)}</p>`;
+    fill(list, el("p", { class: "list-empty error", text: error.message }));
     notify(`Could not load pull requests: ${error.message}`, "error");
     return;
   }
@@ -636,11 +886,14 @@ async function loadPulls() {
 function renderPulls() {
   const list = $("#prList");
   if (!state.pulls) return;
-  if (!state.pulls.length) { list.innerHTML = `<p class="list-empty">No open pull requests in ${escapeHtml(state.selectedRepo)}.</p>`; return; }
-  list.innerHTML = state.pulls.map((pull) => {
-    const link = /^https:\/\//.test(pull.html_url || "") ? ` · <a href="${escapeHtml(pull.html_url)}" target="_blank" rel="noopener noreferrer">View on GitHub</a>` : "";
-    return `<div class="pr-row"><div class="pr-info"><strong>${escapeHtml(pull.title)}${pull.draft ? ' <span class="draft-badge">Draft</span>' : ""}</strong><small>#${escapeHtml(pull.number)} · ${escapeHtml(pull.author || "unknown")} · updated ${escapeHtml(timeAgo(pull.updated_at))}${link}</small></div><button type="button" class="primary-button small js-live-action" data-pr="${escapeHtml(pull.number)}"${state.busy ? " disabled" : ""}>Review this PR</button></div>`;
-  }).join("");
+  if (!state.pulls.length) { fill(list, el("p", { class: "list-empty", text: `No open pull requests in ${state.selectedRepo}.` })); return; }
+  fill(list, state.pulls.map((pull) => {
+    const link = /^https:\/\//.test(pull.html_url || "") ? el("a", { href: pull.html_url, target: "_blank", rel: "noopener noreferrer", text: "View on GitHub" }) : null;
+    const facts = [`#${pull.number}`, pull.draft ? "Draft" : "", pull.author || "", pull.updated_at ? `updated ${timeAgo(pull.updated_at)}` : ""].filter(Boolean).join(" · ");
+    return el("div", { class: "pr-row" },
+      el("span", { class: "choice-text" }, el("span", { class: "choice-title", text: pull.title }), el("span", { class: "choice-sub" }, facts, link ? " · " : "", link)),
+      el("button", { type: "button", class: "btn btn-small js-live-action", dataset: { pr: pull.number }, disabled: state.busy, text: "Review", "aria-label": `Review pull request ${pull.number}` }));
+  }));
 }
 
 function manualReference() {
@@ -658,24 +911,31 @@ function validateReference(ref) {
 async function submitLive(ref) {
   if (state.busy) return;
   const problem = validateReference(ref);
-  if (problem) { notify(problem, "error"); return; }
+  liveError("");
+  if (problem) { liveError(problem); return; }
   const publish = $("#publishInput").checked && !$("#publishInput").disabled;
   if (publish && !window.confirm(`Post advisory comments to ${ref.owner}/${ref.repo} #${ref.number} on GitHub?\n\nPRISM will add one review of type COMMENT. It never approves, requests changes or merges. This cannot be undone from here.`)) return;
+  state.latest = { kind: "live" };
   setBusy(true);
   stopPolling();
   try {
     const payload = await api("/github/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...ref, publish }) });
     state.job = payload.job;
     renderJob();
-    if (!payload.created) notify("This pull request commit is already being reviewed or was just reviewed; showing that job.");
+    if (!payload.created) notify("This commit is already being reviewed or was just reviewed, so that review is shown.");
     pollJob(payload.job.id);
   } catch (error) {
+    state.latest = state.job ? { kind: "live" } : state.demoRun ? { kind: "demo" } : null;
     setBusy(false);
-    state.job = null;
     renderJob();
-    renderPipeline(0, true);
-    notify(error.message, "error");
+    liveError(`Could not start the review: ${error.message}`);
   }
+}
+
+function liveError(message) {
+  const node = $("#liveError");
+  node.textContent = message;
+  node.classList.toggle("hidden", !message);
 }
 
 // Job tracking -------------------------------------------------------------------------------
@@ -703,11 +963,11 @@ function pollJob(id) {
       if (job.status === "completed" || job.status === "failed") { finishJob(job); return; }
     } catch (error) {
       if (token !== state.pollToken) return;
-      if (!error.network) { jobStopped(`Stopped tracking this job: ${error.message}`); return; }
+      if (!error.network) { jobStopped(`Stopped following this review: ${error.message}`); return; }
       failures += 1;
       delay = Math.min(2000 * 2 ** failures, 30000);
-      if (failures >= 8) { jobStopped("Lost contact with the server. The review may still be running; check Recent review jobs under History."); return; }
-      notify(`Connection lost. Retrying in ${Math.round(delay / 1000)}s (attempt ${failures}).`, "error");
+      if (failures >= 8) { jobStopped("Lost contact with the server. The review may still be running; check Recent reviews in History."); return; }
+      notify(`Connection lost. Trying again in ${Math.round(delay / 1000)}s (attempt ${failures}).`, "error");
     }
     setTimeout(tick, delay);
   };
@@ -717,25 +977,22 @@ function pollJob(id) {
 function jobStopped(message) {
   stopPolling();
   setBusy(false);
-  renderPipeline(0, true);
+  renderJob();
   notify(message, "error");
 }
 
 function finishJob(job) {
   stopPolling();
-  setBusy(false);
   if (job.status === "completed" && job.result) {
-    renderPipeline(workflowStages.length);
-    renderResult(job.result);
-    setBusy(false);
-    notify(job.published ? "Review finished and advisory comments were posted to GitHub." : "Review finished and saved.", "success");
+    renderResult(job.result, originForRecord(job, job.result));
+    notify(job.published ? "Review finished and posted to GitHub as comments." : `Review finished: ${plural(job.result.findings.length, "finding")}.`, "success");
   } else if (job.status === "completed") {
-    renderPipeline(workflowStages.length);
-    notify("Review finished, but its stored result could not be loaded.", "error");
+    notify("The review finished, but its stored result could not be loaded.", "error");
   } else {
-    renderPipeline(0, true);
-    notify(`Review failed: ${job.error || "no error text was recorded"}`, "error");
+    notify(`The review failed: ${job.error || "no error text was recorded"}`, "error");
   }
+  setBusy(false);
+  renderJob();
   state.jobs = null;
 }
 
@@ -746,43 +1003,146 @@ function jobElapsed(job) {
   return Math.max(0, end - start);
 }
 
+function latestElapsed() {
+  if (state.latest?.kind === "demo" && state.demoRun) return (state.demoRun.finished ?? Date.now()) - state.demoRun.started;
+  if (state.latest?.kind === "live" && state.job) return jobElapsed(state.job);
+  return null;
+}
+
 function updateElapsed() {
   const node = $("#jobElapsed");
-  if (node && state.job) node.textContent = formatDuration(jobElapsed(state.job));
+  if (node) node.textContent = formatDuration(latestElapsed());
+}
+
+function stepper(steps) {
+  return el("ol", { class: "stepper", "aria-label": "Progress" }, steps.map(([label, stepState]) => el("li", { class: `step ${stepState}`.trim(), "aria-current": stepState === "active" ? "step" : null },
+    el("span", { class: "step-node", "aria-hidden": "true" }),
+    el("span", { text: label }),
+    stepState === "done" || stepState === "failed" ? el("span", { class: "visually-hidden", text: stepState === "done" ? " (done)" : " (failed)" }) : null)));
 }
 
 function renderJob() {
   const card = $("#jobCard");
-  const job = state.job;
-  if (!job) { card.classList.add("hidden"); card.innerHTML = ""; return; }
-  const rank = { queued: 0, running: 1, completed: 2, failed: 2 }[job.status] ?? 0;
-  const labels = ["Queued", "Running", job.status === "failed" ? "Failed" : "Completed"];
-  const steps = labels.map((label, index) => {
-    const cls = index < rank ? "done" : index === rank ? (job.status === "failed" ? "failed" : job.status === "completed" ? "done" : "active") : "";
-    return `<li class="${cls}"><i></i><span>${label}</span></li>`;
-  }).join("");
-  let outcome = "";
-  if (job.status === "failed") outcome = `<p class="job-outcome bad"><strong>Review failed.</strong> ${escapeHtml(job.error || "No error text was recorded.")}</p>`;
-  else if (job.status === "completed") {
-    if (job.published) outcome = `<p class="job-outcome ok"><strong>Posted.</strong> Advisory comments were published to GitHub as a COMMENT review.</p>`;
-    else if (job.publish_error) outcome = `<p class="job-outcome bad"><strong>Posting failed.</strong> ${escapeHtml(job.publish_error)}. The review itself is saved and shown in Findings.</p>`;
-    else outcome = `<p class="job-outcome">${job.publish_requested ? "Posting was requested but nothing was published." : "Not posted to GitHub (you did not ask for it)."} ${escapeHtml(job.finding_count ?? 0)} finding${job.finding_count === 1 ? "" : "s"} saved.</p>`;
+  const latest = state.latest;
+  if (!latest || (latest.kind === "live" && !state.job) || (latest.kind === "demo" && !state.demoRun)) {
+    fill(card, el("p", { class: "empty-line", text: "No review has run in this session yet." }));
+    return;
   }
-  card.innerHTML = `<div class="job-head"><div><span class="section-kicker">REVIEW JOB</span><h3>${escapeHtml(job.repository)} #${escapeHtml(job.pull_number)}</h3></div><div class="job-time"><small>Elapsed</small><strong id="jobElapsed">${formatDuration(jobElapsed(job))}</strong></div></div><ol class="stepper">${steps}</ol>${outcome}<p class="job-meta">Job ${escapeHtml(job.id)} · ${escapeHtml(job.trigger)}${job.requested_by ? ` · by ${escapeHtml(job.requested_by)}` : ""}${job.head_sha ? ` · commit <code>${escapeHtml(job.head_sha.slice(0, 8))}</code>` : ""}</p>`;
-  card.classList.remove("hidden");
-  const stage = job.status === "queued" ? 0 : Math.min(1 + Math.floor((jobElapsed(job) || 0) / 2500), workflowStages.length - 1);
-  if (job.status === "queued" || job.status === "running") renderPipeline(stage);
+  let name, status, steps, outcome, meta, canOpen;
+  if (latest.kind === "demo") {
+    const run = state.demoRun;
+    name = `Example: ${run.title}`;
+    status = JOB_STATUS[run.status];
+    const reviewing = run.status === "running" ? "active" : run.status === "failed" ? "failed" : "done";
+    steps = [["Submitted", "done"], ["Reviewing", reviewing], ["Finished", run.status === "completed" ? "done" : ""]];
+    outcome = run.status === "failed"
+      ? el("p", { class: "job-outcome bad", text: run.error })
+      : run.status === "completed"
+        ? el("p", { class: "job-outcome", text: `${plural(run.count, "finding")} in ${run.filename}. Reviewed on this server; nothing was sent to GitHub.` })
+        : null;
+    meta = null;
+    canOpen = run.status === "completed";
+  } else {
+    const job = state.job;
+    name = `${job.repository} #${job.pull_number}`;
+    status = JOB_STATUS[job.status] || { word: job.status, tone: "grey" };
+    const failed = job.status === "failed";
+    const completed = job.status === "completed";
+    steps = [
+      ["Queued", job.status === "queued" ? "active" : "done"],
+      ["Reviewing", job.status === "running" ? "active" : failed ? "failed" : completed ? "done" : ""],
+      ["Saved", completed ? "done" : ""],
+    ];
+    if (job.publish_requested) steps.push(["Posted to GitHub", job.published ? "done" : job.publish_error ? "failed" : ""]);
+    if (failed) outcome = el("p", { class: "job-outcome bad", text: job.error || "No error text was recorded." });
+    else if (completed) {
+      const count = plural(job.finding_count ?? 0, "finding");
+      if (job.published) outcome = el("p", { class: "job-outcome", text: `${count} saved and posted to GitHub as comments.` });
+      else if (job.publish_error) outcome = el("p", { class: "job-outcome bad", text: `${count} saved, but posting to GitHub failed: ${job.publish_error}` });
+      else outcome = el("p", { class: "job-outcome", text: `${count} saved. ${job.publish_requested ? "Posting was requested but nothing was published." : "Not posted to GitHub."}` });
+    }
+    meta = el("p", { class: "job-meta" },
+      [TRIGGERS[job.trigger] || job.trigger, job.requested_by ? `by ${job.requested_by}` : "", `job ${shortSha(job.id, 8)}`].filter(Boolean).join(" · "),
+      job.head_sha ? " · commit " : "", job.head_sha ? el("code", { text: shortSha(job.head_sha, 8) }) : null);
+    canOpen = completed && Boolean(job.result);
+  }
+  fill(card,
+    el("div", { class: "job-head" },
+      el("div", {}, el("h3", { class: "job-name", text: name }), statusEl(status.word, status.tone)),
+      el("div", { class: "job-time" }, el("small", { text: "Time" }), el("strong", { id: "jobElapsed", text: formatDuration(latestElapsed()) }))),
+    stepper(steps),
+    outcome,
+    canOpen || meta ? el("div", { class: "job-foot" }, meta || el("span"), canOpen ? el("button", { type: "button", class: "btn btn-small", text: "Open findings", onclick: () => setView("findings") }) : null) : null);
+}
+
+// Workflow -----------------------------------------------------------------------------------
+function renderWorkflow() {
+  const steps = [
+    ["Fetch the pull request", "The GitHub REST API returns the metadata, head commit, unified diff and changed files. The demo uses a bundled pull request instead.", null],
+    ["Map the changed lines", "Each diff hunk is parsed so every added line has its file line number and GitHub diff position, plus the function or class around it from the Python syntax tree.", null],
+    ["Analyse in parallel", "Two branches run at the same time on the changed lines only.", [
+      ["Static analysis", [["Ruff", "lint and security rules"], ["Semgrep", "local rule set"]], "No shell, no cache, hard timeout. Matches are certain."],
+      ["Four specialist agents", agentDefinitions.map((agent) => [agent.name, agent.copy.charAt(0).toLowerCase() + agent.copy.slice(1)]), "Structured output and a timeout per agent. A failure is isolated."],
+    ]],
+    ["Validate, deduplicate and rank", "Anything not on an added line or below the minimum confidence is dropped. Reports of the same problem are merged. The rest is ordered by severity, then confidence.", null],
+    ["Suggest fixes", "A suggestion replaces a small range of added lines. Python replacements must parse before they are marked validated.", null],
+    ["Store, and post if asked", "The review is saved to history. If you turn on Post advisory comments and the server allows it, PRISM adds one GitHub review of type COMMENT. It never approves, requests changes or merges.", null],
+  ];
+  fill($("#workflowSteps"), steps.map(([title, text, branches], index) => el("li", {},
+    el("span", { class: "step-num", "aria-hidden": "true", text: String(index + 1) }),
+    el("div", {},
+      el("h2", { class: "step-title", text: title }),
+      el("p", { class: "step-text", text }),
+      branches ? el("div", { class: "step-branches" }, branches.map(([name, items, note]) => el("div", { class: "branch" },
+        el("h3", { class: "branch-title", text: name }),
+        el("ul", {}, items.map(([item, what]) => el("li", {}, el("strong", { text: item }), `, ${what}`))),
+        el("p", { class: "step-text", text: note })))) : null))));
+  const entries = [
+    ["This dashboard", "Demo or Live, from Overview.", "/"],
+    ["API", "Queues a review of a pull request and returns the job at once.", "POST /github/review"],
+    ["Webhook", "Signed pull request events: opened, reopened, new commits, ready for review.", "POST /webhooks/github"],
+    ["Raw diff", "Reviews pasted diff text with the agents only; static tools stay off.", "POST /review"],
+    ["Evaluation", "Compares static-only, single-agent and multi-agent review on a labelled set.", "pr-reviewer-evaluate"],
+  ];
+  fill($("#entryList"), entries.map(([title, text, endpoint]) => el("li", { class: "row" },
+    el("span", { class: "row-main" }, el("span", { class: "row-title", text: title }), el("span", { class: "row-sub", text })),
+    el("span", { class: "detail-value" }, el("span", { class: "env", text: endpoint })))));
+}
+
+// Events -------------------------------------------------------------------------------------
+function radioKeys(container, selector, choose) {
+  container.addEventListener("keydown", (event) => {
+    if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    const items = $$(selector, container).filter((item) => !item.classList.contains("hidden"));
+    const index = items.indexOf(document.activeElement);
+    if (index < 0) return;
+    event.preventDefault();
+    const step = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1;
+    const next = items[(index + step + items.length) % items.length];
+    choose(next);
+  });
+}
+
+function setSeverity(button) {
+  state.severity = button.dataset.severity;
+  renderSeverityControls();
+  renderFindings();
+  button.focus();
 }
 
 function bindEvents() {
-  $$(".nav-item").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
-  $$('[data-view-link]').forEach((button) => button.addEventListener("click", () => setView(button.dataset.viewLink)));
-  $$(".mode-switch button").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
-  // A div, not a nested <form>: the sign-in prompt lives inside the review form.
+  $$(".nav-row").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
+  window.addEventListener("hashchange", () => setView(window.location.hash.slice(1)));
+  $$(".launcher > .segmented button").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
+  radioKeys($(".launcher > .segmented"), "button", (next) => { setMode(next.dataset.mode); next.focus(); });
+  radioKeys($("#demoCasePicker"), ".choice", (next) => chooseCase(next.dataset.case, true));
+  // A div, not a nested <form>: the sign-in fields live inside the review form.
   $("#passwordSubmit").addEventListener("click", passwordSignIn);
   $("#passwordForm").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); passwordSignIn(); } });
   $("#reviewForm").addEventListener("submit", (event) => { event.preventDefault(); runReview(); });
-  $("#manualBlock").addEventListener("toggle", () => { $("#manualBlock").dataset.touched = "1"; });
+  $("#manualBlock").addEventListener("toggle", () => {
+    if (liveAccess().kind === "signed-in") $("#manualActions").classList.toggle("hidden", !$("#manualBlock").open);
+  });
   $("#repoSearch").addEventListener("input", renderRepos);
   $("#repoSearch").addEventListener("keydown", (event) => { if (event.key === "Enter") event.preventDefault(); });
   $("#repoList").addEventListener("click", (event) => { const item = event.target.closest("[data-repo]"); if (item) selectRepo(item.dataset.repo); });
@@ -794,34 +1154,27 @@ function bindEvents() {
   });
   $("#prReload").addEventListener("click", () => { if (state.selectedRepo) loadPulls(); else notify("Choose a repository first."); });
   $("#jobsReload").addEventListener("click", loadJobs);
-  $("#view-history").addEventListener("click", (event) => { const row = event.target.closest("tr[data-job], tr[data-review]"); if (row) openStored(row.dataset.job ? "job" : "review", row.dataset.job || row.dataset.review); });
-  $("#view-history").addEventListener("keydown", (event) => { if (event.key !== "Enter" && event.key !== " ") return; const row = event.target.closest("tr[data-job], tr[data-review]"); if (row) { event.preventDefault(); openStored(row.dataset.job ? "job" : "review", row.dataset.job || row.dataset.review); } });
-  $("#refreshButton").addEventListener("click", async () => {
-    await Promise.all([loadStatus(), loadAuth()]);
-    if (state.mode === "demo") await runReview();
-    else if (state.auth && state.auth.authenticated && state.auth.user.auth_method !== "password") { state.repos = null; loadRepos(); if (state.selectedRepo) loadPulls(); }
-    if ($("#view-history").classList.contains("active")) loadJobs();
+  $("#statusReload").addEventListener("click", async () => {
+    const [statusOk, authOk] = await Promise.all([loadStatus(), loadAuth()]);
+    if (state.auth && state.auth.authenticated && state.auth.user.auth_method !== "password") { state.repos = null; if (state.mode === "live") loadRepos(); if (state.selectedRepo) loadPulls(); }
+    if (statusOk && authOk) notify("Server status checked.", "success");
   });
   $("#historyForm").addEventListener("submit", (event) => { event.preventDefault(); loadHistory($("#historyRepo").value.trim()); });
-  $$("#severityFilters button").forEach((button) => button.addEventListener("click", () => {
-    state.severity = button.dataset.severity;
-    $$("#severityFilters button").forEach((item) => item.classList.toggle("active", item === button));
-    renderFindings();
-  }));
+  $$("#severityFilters button").forEach((button) => button.addEventListener("click", () => setSeverity(button)));
+  radioKeys($("#severityFilters"), "button", setSeverity);
 }
 
 async function init() {
-  renderPipeline();
   renderWorkflow();
-  renderAgents();
-  renderMeta(null);
+  renderFindings();
+  renderAgents([]);
   bindEvents();
   setMode(state.mode);
   const requestedView = window.location.hash.slice(1);
-  if (["overview", "workflow", "findings", "history", "configuration"].includes(requestedView)) setView(requestedView);
+  setView(VIEWS.includes(requestedView) ? requestedView : "overview");
   await Promise.all([loadStatus(), loadAuth(), loadDemoCases().catch((error) => notify(error.message, "error"))]);
   handleAuthRedirect();
-  if (state.mode === "demo") await runReview();
+  if (state.mode === "demo") await runReview({ quiet: true });
 }
 
 document.addEventListener("DOMContentLoaded", init);

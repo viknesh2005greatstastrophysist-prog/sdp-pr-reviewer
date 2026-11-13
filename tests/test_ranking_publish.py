@@ -185,7 +185,8 @@ def test_publish_failure_is_captured_and_the_review_is_still_stored(tmp_path):
 def test_demo_diff_fixture_still_has_the_expected_finding(tmp_path):
     service, _ = make_service(tmp_path, permission=False, github=PublishingGitHub())
     result = asyncio.run(service.review_pull_request(REF, publish=True))
-    assert DEMO_DIFF and any(item.rule_id == "S307" for item in result.findings)
+    # Ruff S307 corroborates the eval finding and is merged into it (cross-source dedupe).
+    assert DEMO_DIFF and any("ruff" in item.source.split("+") for item in result.findings)
 
 
 # --- GitHub client retry --------------------------------------------------------------------

@@ -42,5 +42,5 @@ def test_complete_service_path_persists_review(tmp_path):
     ref = PullRequestRef(owner="academic", repo="demo", number=1)
     result = asyncio.run(service.review_pull_request(ref))
     assert result.head_sha == "abc123"
-    assert any(item.rule_id == "S307" for item in result.findings)
+    assert any("ruff" in item.source.split("+") for item in result.findings)
     assert store.history("academic/demo")[0]["finding_count"] >= 1
