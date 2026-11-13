@@ -45,7 +45,7 @@
 
 ## Render deployment notes
 
-- Enter secrets (`SESSION_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `GITHUB_TOKEN` or App key, `LLM_API_KEY`, `DEMO_ACCOUNTS`, webhook secret) in the Render dashboard only; `render.yaml` marks them `sync: false` (or generates them) and must never contain values.
+- Enter secrets (`GITHUB_OAUTH_CLIENT_SECRET`, `GITHUB_TOKEN` or App key, `LLM_API_KEY`) in the Render dashboard only; `render.yaml` marks them `sync: false`, and Render generates `SESSION_SECRET` and the webhook secret. The one value committed in `render.yaml` is `DEMO_ACCOUNTS`, which holds only salted PBKDF2-SHA256 hashes (600,000 iterations) of randomly generated demo passwords; the passwords themselves are never committed and are handed to evaluators separately.
 - The free Render Postgres database expires after 30 days. Review history and sessions are lost with it, so treat the free tier as demonstration-only and export anything worth keeping.
 - Set `SESSION_SECRET` explicitly; without it sessions do not survive a restart.
 
