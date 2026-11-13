@@ -7,7 +7,7 @@ from contextlib import ExitStack
 import pytest
 from fastapi.testclient import TestClient
 
-from pr_reviewer import api, auth
+from pr_reviewer import api, auth, ratelimit
 from pr_reviewer.database import ReviewStore
 from pr_reviewer.jobs import JobManager
 from pr_reviewer.models import ReviewResult
@@ -52,14 +52,18 @@ class AppHarness:
         api.settings.cache_clear()
         api._store_for.cache_clear()
         api.login_throttle = auth.LoginThrottle()
+        api.ip_throttle = auth.LoginThrottle(attempts=auth.IP_LOCKOUT_ATTEMPTS)
+        api.rate_limiter = ratelimit.RateLimiter()
         client = self.stack.enter_context(TestClient(api.app))
         # The lifespan installs the real JobManager; swap in the fake runner afterwards.
         api.app.state.jobs = JobManager(api.store(), runner or self.default_runner)
         return client
 
-    async def default_runner(self, ref, token, publish):
+    async def default_runner(self, ref, token, publish, requested_by=None):
         self.runner_calls.append((ref, token, publish))
-        review_id = api.store().save(ref, ReviewResult(files=[], findings=[], summary="ok"))
+        review_id = api.store().save(
+            ref, ReviewResult(files=[], findings=[], summary="ok"), requested_by=requested_by
+        )
         return ReviewResult(files=[], findings=[], summary="ok", review_id=review_id)
 
     def close(self) -> None:

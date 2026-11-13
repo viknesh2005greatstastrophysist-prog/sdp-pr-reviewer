@@ -137,6 +137,10 @@ async def exchange_code(
 def create_session(store: ReviewStore, settings: Settings, user: dict, token: str | None) -> str:
     """Store a session. ``token=None`` marks a password session (no GitHub token exists)."""
     session_id = secrets.token_urlsafe(32)
+    try:
+        store.purge_expired_sessions()
+    except Exception:  # noqa: BLE001 - housekeeping must never block a sign-in
+        log.warning("Could not purge expired sessions", exc_info=True)
     store.save_session(
         UserSession(
             id_hash=_hash_session_id(settings, session_id),
@@ -178,6 +182,7 @@ MIN_ITERATIONS = 600_000
 MAX_ITERATIONS = 5_000_000
 LOCKOUT_ATTEMPTS = 5
 LOCKOUT_WINDOW_SECONDS = 600
+IP_LOCKOUT_ATTEMPTS = 20
 
 
 def hash_password(password: str, iterations: int = MIN_ITERATIONS) -> str:

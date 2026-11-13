@@ -18,7 +18,8 @@ from .models import PullRequestRef, ReviewResult
 
 log = logging.getLogger(__name__)
 
-Runner = Callable[[PullRequestRef, str | None, bool], Awaitable[ReviewResult]]
+# runner(ref, token, publish, requested_by=...) -> ReviewResult
+Runner = Callable[..., Awaitable[ReviewResult]]
 
 
 class JobManager:
@@ -47,24 +48,36 @@ class JobManager:
             delivery_id=delivery_id,
         )
         if created:
-            task = asyncio.create_task(self._run(job["id"], ref.model_copy(), token, publish))
+            task = asyncio.create_task(
+                self._run(job["id"], ref.model_copy(), token, publish, requested_by)
+            )
             self.tasks.add(task)
             task.add_done_callback(self.tasks.discard)
         return job, created
 
-    async def _run(self, job_id: str, ref: PullRequestRef, token: str | None, publish: bool):
+    async def _run(
+        self,
+        job_id: str,
+        ref: PullRequestRef,
+        token: str | None,
+        publish: bool,
+        requested_by: str | None = None,
+    ):
         async with self.semaphore:
-            self.store.update_job(job_id, status="running", started_at=datetime.now(UTC))
             try:
-                result = await self.runner(ref, token, publish)
+                self.store.update_job(job_id, status="running", started_at=datetime.now(UTC))
+                result = await self.runner(ref, token, publish, requested_by=requested_by)
             except Exception as exc:  # noqa: BLE001 - every failure must reach the job record
                 log.exception("Review job %s failed", job_id)
-                self.store.update_job(
-                    job_id,
-                    status="failed",
-                    error=f"{type(exc).__name__}: {str(exc)[:500]}",
-                    finished_at=datetime.now(UTC),
-                )
+                try:
+                    self.store.update_job(
+                        job_id,
+                        status="failed",
+                        error=f"{type(exc).__name__}: {str(exc)[:500]}",
+                        finished_at=datetime.now(UTC),
+                    )
+                except Exception:  # noqa: BLE001 - best effort; the startup sweep catches the rest
+                    log.exception("Could not record failure of job %s", job_id)
                 return
             self.store.update_job(
                 job_id,

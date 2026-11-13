@@ -36,7 +36,7 @@ class ReviewService:
         return [LLMReviewAgent(category, client) for category in SPECIALIZATIONS]
 
     async def review_pull_request(
-        self, ref: PullRequestRef, publish: bool | None = None
+        self, ref: PullRequestRef, publish: bool | None = None, requested_by: str | None = None
     ) -> ReviewResult:
         """Review one pull request.
 
@@ -65,7 +65,7 @@ class ReviewService:
         RefactoringEngine().validate_all(result.findings, result.files)
         result.summary = executive_summary(result.findings, result.warnings)
         if self.store:
-            result.review_id = self.store.save(ref, result)
+            result.review_id = self.store.save(ref, result, requested_by=requested_by)
         wants_publish = self.settings.publish_reviews if publish is None else publish
         if wants_publish and self.settings.publish_reviews:
             try:

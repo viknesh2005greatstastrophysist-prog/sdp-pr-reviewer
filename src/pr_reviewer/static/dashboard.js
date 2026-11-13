@@ -242,7 +242,7 @@ function renderReadiness(status) {
     ["GitHub sign-in", status.oauth_configured, status.oauth_configured ? "configured" : "not configured"],
     ["Review publishing", status.publishing_enabled, status.publishing_enabled ? "enabled" : "safe / disabled"],
   ];
-  const essential = [status.analyzers.ruff, status.analyzers.semgrep, status.database];
+  const essential = [status.analyzers.ruff, status.analyzers.semgrep, status.database, status.github_connected || status.oauth_configured, status.llm_connected];
   const score = Math.round((essential.filter(Boolean).length / essential.length) * 100);
   $("#readinessScore").textContent = `${score}%`;
   $("#readinessList").innerHTML = checks.map(([name, ok, note]) => `<div class="readiness-item"><span>${name}</span><span class="${ok ? "ok" : "missing"}">${ok ? "●" : "○"} ${note}</span></div>`).join("");
@@ -291,7 +291,7 @@ function activityEntries(result) {
     ["Diff parsed", `${result.files.length} changed file${result.files.length === 1 ? "" : "s"} mapped`],
     ["Context extracted", "Changed lines grounded in AST symbols"],
     ["Static evidence collected", `${result.findings.filter((f) => ["ruff", "semgrep"].includes(f.source)).length} deterministic matches`],
-    ["Specialists consolidated", `${result.agent_runs.filter((run) => run.status === "success").length}/4 agents completed`],
+    ["Specialists consolidated", `${result.agent_runs.filter((run) => run.status === "success").length}/${result.agent_runs.length} agents completed`],
     ["Review assembled", `${result.findings.length} deduplicated findings ranked`],
   );
   return entries;
@@ -310,7 +310,7 @@ function renderResult(result) {
   $("#linesMetric").textContent = `${additions} added lines mapped`;
   $("#findingsMetric").textContent = result.findings.length;
   $("#severityMetric").textContent = `${elevated} high-priority`;
-  $("#agentsMetric").textContent = `${result.agent_runs.filter((run) => run.status === "success").length || 4}/4`;
+  $("#agentsMetric").textContent = `${result.agent_runs.filter((run) => run.status === "success").length}/${result.agent_runs.length}`;
   $("#fixesMetric").textContent = fixes;
   $("#findingBadge").textContent = result.findings.length;
   renderAgents(result.agent_runs);
@@ -501,6 +501,7 @@ function handleAuthRedirect() {
   if (!result) return;
   if (result === "ok") { setMode("live"); notify("Signed in with GitHub.", "success"); }
   else if (result === "denied") notify("GitHub sign-in was cancelled or denied. You are not signed in.", "error");
+  else if (result === "error") notify("GitHub sign-in failed (expired or invalid sign-in attempt). Please try again.", "error");
   params.delete("auth");
   const query = params.toString();
   history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);

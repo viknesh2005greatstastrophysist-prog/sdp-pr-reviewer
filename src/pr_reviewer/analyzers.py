@@ -45,6 +45,7 @@ class StaticAnalyzer:
             "ruff": [
                 "ruff",
                 "check",
+                "--isolated",  # ignore ruff.toml / pyproject.toml shipped by the PR
                 "--no-cache",
                 "--select",
                 "E,F,I,B,UP,S",
@@ -58,6 +59,8 @@ class StaticAnalyzer:
                 "--json",
                 "--metrics=off",
                 "--disable-version-check",
+                "--x-ignore-semgrepignore-files",  # a PR must not exclude its own files
+                "--no-git-ignore",
                 "--config",
                 str(Path(__file__).with_name("semgrep_rules.yml")),
                 ".",

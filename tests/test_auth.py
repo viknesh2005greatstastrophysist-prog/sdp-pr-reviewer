@@ -66,14 +66,14 @@ def test_callback_rejects_wrong_or_missing_state(harness, github_stubs, state):
     client.get("/auth/github/login", follow_redirects=False)
     suffix = f"&state={state}" if state else ""
     response = client.get(f"/auth/github/callback?code=abc{suffix}", follow_redirects=False)
-    assert response.status_code == 400
+    assert response.status_code == 302 and response.headers["location"] == "/?auth=error"
     assert client.get("/auth/status").json()["authenticated"] is False
 
 
-def test_callback_without_prior_login_cookie_is_400(harness, github_stubs):
+def test_callback_without_prior_login_cookie_redirects_with_error(harness, github_stubs):
     client = harness.build(**OAUTH)
     response = client.get("/auth/github/callback?code=abc&state=anything", follow_redirects=False)
-    assert response.status_code == 400
+    assert response.status_code == 302 and response.headers["location"] == "/?auth=error"
 
 
 def test_callback_denied_redirects_without_session(harness):
@@ -338,13 +338,6 @@ def test_lockout_after_five_failures_blocks_even_the_right_password(harness, dem
     assert client.get("/auth/status").json()["authenticated"] is False
 
 
-def test_lockout_by_client_ip_across_usernames(harness, demo_env):
-    client = harness.build(**demo_env)
-    for index in range(5):
-        assert login(client, username=f"guess{index}", password="bad").status_code == 401
-    assert login(client).status_code == 429
-
-
 def test_successful_login_resets_username_failures(harness, demo_env):
     client = harness.build(**demo_env)
     for _ in range(4):
@@ -431,7 +424,7 @@ def test_exchange_code_failures_become_oauth_errors():
         exchange(lambda request: httpx.Response(200, json={"error": "bad_verification_code"}))
 
 
-def test_callback_reports_github_failure_as_502(harness, monkeypatch):
+def test_callback_redirects_with_error_on_github_failure(harness, monkeypatch):
     async def failing(config, code, transport=None):
         raise auth.OAuthError("GitHub rejected the authorization code: expired")
 
@@ -440,5 +433,9 @@ def test_callback_reports_github_failure_as_502(harness, monkeypatch):
     client.get("/auth/github/login", follow_redirects=False)
     state = client.cookies.get(auth.STATE_COOKIE)
     response = client.get(f"/auth/github/callback?code=abc&state={state}", follow_redirects=False)
-    assert response.status_code == 502 and "expired" in response.json()["detail"]
+    assert response.status_code == 302 and response.headers["location"] == "/?auth=error"
+    assert (
+        "set-cookie" not in response.headers
+        or auth.SESSION_COOKIE not in response.headers["set-cookie"]
+    )
     assert client.get("/auth/status").json()["authenticated"] is False

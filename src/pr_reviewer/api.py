@@ -6,15 +6,17 @@ import tempfile
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Path as PathParam
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth
+from . import auth, ratelimit
 from .agents import SPECIALIZATIONS, LLMReviewAgent
-from .database import ReviewStore
+from .database import ReviewStore, Scope
 from .demos import DEMO_CASES, demo_agents
 from .github import GitHubClient, GitHubError, app_installation_client, verify_webhook_signature
 from .jobs import JobManager
@@ -30,7 +32,10 @@ NAME = r"^[A-Za-z0-9_.-]+$"
 REPOS_NEED_GITHUB_DETAIL = (
     "Sign in with GitHub to browse your repositories; enter owner/repo/number instead"
 )
-login_throttle = auth.LoginThrottle()
+login_throttle = auth.LoginThrottle()  # failures per (username, client address)
+ip_throttle = auth.LoginThrottle(attempts=auth.IP_LOCKOUT_ATTEMPTS)  # per client address only
+rate_limiter = ratelimit.RateLimiter()
+ReviewId = Annotated[int, PathParam(ge=1, le=2**31 - 1)]
 REVIEW_ACTIONS = {"opened", "reopened", "synchronize", "ready_for_review"}
 
 
@@ -122,6 +127,36 @@ def require_login(request: Request) -> auth.AuthenticatedUser:
     return user
 
 
+def viewer_scope(user: auth.AuthenticatedUser | None) -> Scope | None:
+    """Which stored rows this viewer may read (``None`` means all of them).
+
+    No sign-in method configured: everything (local development). A GitHub user: only rows
+    they requested. A demo account: rows requested by any demo account plus unowned rows
+    (webhook, API and server-credential reviews).
+    """
+    config = settings()
+    if not config.login_required:
+        return None
+    demo_names = frozenset(name for name, _ in config.demo_accounts)
+    if user is None:
+        return Scope(frozenset())
+    if user.auth_method == "password":
+        return Scope(demo_names, include_unowned=True)
+    # A GitHub login that collides with a demo account name must not inherit demo rows.
+    return Scope(frozenset({user.login}) - demo_names)
+
+
+def client_address(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def rate_limit(request: Request) -> None:
+    if not rate_limiter.allow(client_address(request)):
+        raise HTTPException(
+            status_code=429, detail="Too many requests from this address. Try again in a minute."
+        )
+
+
 def require_same_origin(origin: str | None = Header(default=None)) -> None:
     if not auth.same_origin(settings(), origin):
         raise HTTPException(status_code=403, detail="Cross-origin request rejected")
@@ -155,11 +190,15 @@ async def _server_github(ref: PullRequestRef) -> GitHubClient:
     raise GitHubError("GitHub credentials are not configured")
 
 
-async def run_review(ref: PullRequestRef, token: str | None, publish: bool) -> ReviewResult:
+async def run_review(
+    ref: PullRequestRef, token: str | None, publish: bool, requested_by: str | None = None
+) -> ReviewResult:
     """Job runner: a signed-in user's token, otherwise the server's App/token credentials."""
     config = settings()
     github = GitHubClient(token, config.github_api_url) if token else await _server_github(ref)
-    return await ReviewService(config, github, store()).review_pull_request(ref, publish=publish)
+    return await ReviewService(config, github, store()).review_pull_request(
+        ref, publish=publish, requested_by=requested_by
+    )
 
 
 # Dashboard and status ---------------------------------------------------------------------
@@ -198,7 +237,7 @@ def dashboard_demo_cases():
     return [case.metadata() for case in DEMO_CASES.values()]
 
 
-@app.post("/dashboard/demo")
+@app.post("/dashboard/demo", dependencies=[Depends(rate_limit)])
 async def dashboard_demo(request: DemoReviewRequest | None = None):
     """Exercise the complete safe pipeline against a bundled, trusted demonstration PR."""
     config = settings()
@@ -255,6 +294,12 @@ def github_login():
     return response
 
 
+def _auth_error_redirect() -> RedirectResponse:
+    response = RedirectResponse("/?auth=error", status_code=302)
+    response.delete_cookie(auth.STATE_COOKIE, path="/auth/github")
+    return response
+
+
 @app.get("/auth/github/callback", include_in_schema=False)
 async def github_callback(
     request: Request, code: str | None = None, state: str | None = None, error: str | None = None
@@ -265,12 +310,13 @@ async def github_callback(
     if error:
         return RedirectResponse("/?auth=denied", status_code=302)
     if not code or not auth.states_match(request.cookies.get(auth.STATE_COOKIE), state):
-        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+        return _auth_error_redirect()
     try:
         token = await auth.exchange_code(config, code)
         profile = await GitHubClient(token, config.github_api_url).current_user()
-    except (auth.OAuthError, GitHubError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except (auth.OAuthError, GitHubError):
+        # Browsers land here from GitHub: send them back to the dashboard, never raw JSON.
+        return _auth_error_redirect()
     session_id = auth.create_session(store(), config, profile, token)
     response = RedirectResponse("/?auth=ok", status_code=302)
     response.delete_cookie(auth.STATE_COOKIE, path="/auth/github")
@@ -290,16 +336,19 @@ def password_login(body: PasswordLoginRequest, request: Request):
     config = settings()
     if not config.password_login_enabled:
         raise HTTPException(status_code=503, detail="Demo account sign-in is not configured")
-    client = request.client.host if request.client else "unknown"
-    keys = (f"user:{body.username.casefold()}", f"ip:{client}")
-    if login_throttle.locked(*keys):
+    client = client_address(request)
+    # Keyed on (username, address) so a stranger cannot lock an evaluator out of their own
+    # account; a separate, looser per-address limit still caps spraying across usernames.
+    pair = f"{body.username.casefold()}|{client}"
+    if login_throttle.locked(pair) or ip_throttle.locked(client):
         raise HTTPException(
             status_code=429, detail="Too many failed sign-in attempts. Try again in 10 minutes."
         )
     if not auth.authenticate(config, body.username, body.password):
-        login_throttle.record_failure(*keys)
+        login_throttle.record_failure(pair)
+        ip_throttle.record_failure(client)
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    login_throttle.reset(keys[0])
+    login_throttle.reset(pair)
     session_id = auth.create_session(
         store(), config, {"login": body.username, "name": "Demo account"}, None
     )
@@ -349,7 +398,10 @@ async def my_pull_requests(
 
 
 # Reviews and jobs -------------------------------------------------------------------------
-@app.post("/review")
+@app.post(
+    "/review",
+    dependencies=[Depends(require_same_origin), Depends(require_viewer), Depends(rate_limit)],
+)
 async def review(request: ReviewRequest):
     """Review submitted diff data. Static tools are intentionally disabled on this endpoint."""
     config = settings()
@@ -387,32 +439,33 @@ async def review_github(body: GitHubReviewRequest, request: Request):
 
 
 @app.get("/jobs")
-def list_jobs(limit: int = 25, repository: str | None = None, _=Depends(require_viewer)):
-    return store().jobs(limit, repository)
+def list_jobs(limit: int = 25, repository: str | None = None, user=Depends(require_viewer)):
+    return store().jobs(limit, repository, viewer_scope(user))
 
 
 @app.get("/jobs/{job_id}")
-def get_job(job_id: str, _=Depends(require_viewer)):
-    job = store().job(job_id)
+def get_job(job_id: str, user=Depends(require_viewer)):
+    scope = viewer_scope(user)
+    job = store().job(job_id, scope)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job")
     if job["status"] == "completed" and job["review_id"] is not None:
-        review_record = store().review(job["review_id"])
+        review_record = store().review(job["review_id"], scope)
         job["result"] = review_record["result"] if review_record else None
     return job
 
 
 @app.get("/reviews/{review_id}")
-def get_review(review_id: int, _=Depends(require_viewer)):
-    record = store().review(review_id)
+def get_review(review_id: ReviewId, user=Depends(require_viewer)):
+    record = store().review(review_id, viewer_scope(user))
     if record is None:
         raise HTTPException(status_code=404, detail="Unknown review")
     return record
 
 
 @app.get("/history/{owner}/{repo}")
-def history(owner: str, repo: str, limit: int = 50, _=Depends(require_viewer)):
-    return store().history(f"{owner}/{repo}", limit)
+def history(owner: str, repo: str, limit: int = 50, user=Depends(require_viewer)):
+    return store().history(f"{owner}/{repo}", limit, viewer_scope(user))
 
 
 @app.post("/webhooks/github", status_code=202)

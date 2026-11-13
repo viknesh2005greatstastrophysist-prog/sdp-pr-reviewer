@@ -38,7 +38,7 @@ def store(tmp_path):
 
 # --- JobManager ------------------------------------------------------------------------------
 def test_job_completes_with_result_and_review_id(harness):
-    async def runner(ref, token, publish):
+    async def runner(ref, token, publish, requested_by=None):
         review_id = api.store().save(ref, result_with_findings())
         return result_with_findings(review_id=review_id, head_sha="deadbeef", published=True)
 
@@ -58,7 +58,7 @@ def test_job_completes_with_result_and_review_id(harness):
 
 
 def test_failed_job_records_the_error(harness):
-    async def runner(ref, token, publish):
+    async def runner(ref, token, publish, requested_by=None):
         raise RuntimeError("GitHub exploded")
 
     client = harness.build(runner=runner, GITHUB_TOKEN="t")
@@ -75,7 +75,7 @@ def test_active_job_for_same_pull_request_is_deduplicated(store):
         gate = asyncio.Event()
         calls = []
 
-        async def runner(ref, token, publish):
+        async def runner(ref, token, publish, requested_by=None):
             calls.append(ref.number)
             await gate.wait()
             return result_with_findings()
@@ -100,7 +100,7 @@ def test_active_job_for_same_pull_request_is_deduplicated(store):
 def test_tokens_are_passed_to_the_runner_but_never_stored(store):
     seen = []
 
-    async def runner(ref, token, publish):
+    async def runner(ref, token, publish, requested_by=None):
         seen.append((token, publish))
         return result_with_findings()
 

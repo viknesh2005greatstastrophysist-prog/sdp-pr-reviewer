@@ -151,7 +151,9 @@ class GitHubClient:
         warnings: list[str] = []
         destination = destination.resolve()
         for item in files:
-            if item.status == "deleted":
+            # Only Python source is fetched: analyzer configuration files (ruff.toml,
+            # pyproject.toml, .semgrepignore, ...) from the PR must never reach the checkout.
+            if item.status == "deleted" or not item.path.endswith(".py"):
                 continue
             target = (destination / item.path).resolve()
             try:
@@ -185,14 +187,17 @@ class GitHubClient:
             diff_file = files.get(finding.path)
             if diff_file is None or finding.line not in diff_file.added_lines():
                 continue
-            comments.append(
-                {
-                    "path": finding.path,
-                    "line": finding.line,
-                    "side": "RIGHT",
-                    "body": renderer.github_body(finding),
-                }
-            )
+            suggestion = renderer.publishable_suggestion(finding, diff_file)
+            comment: dict[str, Any] = {
+                "path": finding.path,
+                "line": suggestion.end_line if suggestion else finding.line,
+                "side": "RIGHT",
+                "body": renderer.github_body(finding, include_suggestion=suggestion is not None),
+            }
+            if suggestion and suggestion.start_line < suggestion.end_line:
+                comment["start_line"] = suggestion.start_line
+                comment["start_side"] = "RIGHT"
+            comments.append(comment)
         payload = {
             "commit_id": ref.head_sha,
             "event": "COMMENT",

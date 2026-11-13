@@ -15,6 +15,9 @@ class RefactoringEngine:
         selected = set(range(suggestion.start_line, suggestion.end_line + 1))
         if not selected or not selected.issubset(allowed) or len(selected) > 25:
             return None
+        if finding.line not in selected:
+            # GitHub anchors the comment on the suggestion range; it must cover the finding.
+            return None
         if "\x00" in suggestion.replacement or len(suggestion.replacement) > 12_000:
             return None
         if diff_file.path.endswith(".py"):
@@ -33,12 +36,23 @@ class RefactoringEngine:
         return validated
 
     @staticmethod
-    def github_body(finding: Finding) -> str:
+    def publishable_suggestion(finding: Finding, diff_file: DiffFile) -> Suggestion | None:
+        """The suggestion only if it is validated, all on added lines and covers the finding."""
+        suggestion = finding.suggestion
+        if suggestion is None or not suggestion.validated:
+            return None
+        selected = set(range(suggestion.start_line, suggestion.end_line + 1))
+        if not selected or not selected.issubset(diff_file.added_lines()):
+            return None
+        return suggestion if finding.line in selected else None
+
+    @staticmethod
+    def github_body(finding: Finding, include_suggestion: bool = True) -> str:
         body = (
             f"**{finding.title}** ({finding.severity.value})\n\n"
             f"{finding.message}\n\nEvidence: {finding.evidence}"
         )
-        if finding.suggestion and finding.suggestion.validated:
+        if include_suggestion and finding.suggestion and finding.suggestion.validated:
             body += (
                 f"\n\n```suggestion\n{finding.suggestion.replacement}\n```\n\n"
                 f"{finding.suggestion.rationale}"
