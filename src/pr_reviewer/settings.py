@@ -90,7 +90,10 @@ class Settings:
             github_oauth_client_secret=text("GITHUB_OAUTH_CLIENT_SECRET"),
             github_oauth_scopes=text("GITHUB_OAUTH_SCOPES") or cls.github_oauth_scopes,
             session_secret=text("SESSION_SECRET"),
-            public_base_url=(text("PUBLIC_BASE_URL") or cls.public_base_url).rstrip("/"),
+            public_base_url=(
+                # Render sets RENDER_EXTERNAL_URL automatically for every web service.
+                text("PUBLIC_BASE_URL") or text("RENDER_EXTERNAL_URL") or cls.public_base_url
+            ).rstrip("/"),
             llm_api_key=text("LLM_API_KEY"),
             llm_model=text("LLM_MODEL") or cls.llm_model,
             llm_base_url=text("LLM_BASE_URL") or cls.llm_base_url,
