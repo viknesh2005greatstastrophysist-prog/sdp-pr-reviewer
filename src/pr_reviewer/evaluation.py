@@ -234,7 +234,7 @@ def merge_results(first: ReviewResult, again: ReviewResult) -> ReviewResult:
     """
     reran = {run.agent for run in again.agent_runs}
     runs = [run for run in first.agent_runs if run.agent not in reran] + again.agent_runs
-    findings = aggregate(first.findings + again.findings)
+    findings = aggregate(first.findings + again.findings, again.files or first.files)
     return again.model_copy(
         update={
             "findings": findings,

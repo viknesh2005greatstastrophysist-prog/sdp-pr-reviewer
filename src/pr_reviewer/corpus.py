@@ -29,7 +29,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .evaluation import EvaluationCase
+from .evaluation import EvaluationCase, load_jsonl
 from .models import Finding, Severity
 from .parser import parse_diff
 
@@ -41,13 +41,14 @@ DEFAULT_REPOS = (
     "fastapi/fastapi",
     "python-poetry/poetry",
     "pallets/click",
-    "encode/starlette",
+    "Kludex/starlette",
     "pytest-dev/pytest",
-    "tiangolo/sqlmodel",
+    "fastapi/sqlmodel",
     "pallets/werkzeug",
     "pallets/jinja",
     "aio-libs/aiohttp",
     "psf/black",
+    "scikit-learn/scikit-learn",
 )
 SPLIT_SEED = "sdp-pr-reviewer-split-v1"
 COMMENT_TEXT_CHARS = 2000
@@ -329,6 +330,7 @@ class GitHubFetcher:
         self._client = httpx.AsyncClient(
             base_url=api_url.rstrip("/"),
             timeout=60,
+            follow_redirects=True,  # renamed repositories answer with 301
             transport=transport,
             headers={
                 "Authorization": f"Bearer {token}",
@@ -522,12 +524,18 @@ async def build_repo_cases(
     repos_dir: Path,
     min_findings: int = MIN_FINDINGS_PER_CASE,
     split: str | None = None,
+    skip_merged: int = 0,
+    already: int = 0,
 ) -> list[EvaluationCase]:
+    """`skip_merged` ignores that many most-recent merged PRs (already scanned by an earlier
+    pass); `already` is the number of cases the repository has from that pass (counts toward
+    `max_cases`)."""
     owner, repo = full_name.split("/", 1)
     cases: list[EvaluationCase] = []
     scanned = 0
+    seen_merged = 0
     page = 1
-    while scanned < max_prs and len(cases) < max_cases:
+    while scanned < max_prs and len(cases) + already < max_cases:
         batch = await fetcher.get_json(
             f"/repos/{owner}/{repo}/pulls",
             {
@@ -543,6 +551,9 @@ async def build_repo_cases(
         for pr in batch:
             if not pr.get("merged_at"):
                 continue
+            seen_merged += 1
+            if seen_merged <= skip_merged:
+                continue
             scanned += 1
             case = await build_case(
                 fetcher, owner, repo, pr, repos_dir, min_findings=min_findings, split=split
@@ -550,7 +561,7 @@ async def build_repo_cases(
             if case:
                 cases.append(case)
                 print(f"{full_name}: case {case.case_id} ({len(case.human_findings)} findings)")
-            if scanned >= max_prs or len(cases) >= max_cases:
+            if scanned >= max_prs or len(cases) + already >= max_cases:
                 break
         page += 1
     print(f"{full_name}: scanned {scanned} merged PRs, kept {len(cases)} cases")
@@ -567,9 +578,14 @@ async def build_corpus(
     transport: httpx.AsyncBaseTransport | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     min_findings: int = MIN_FINDINGS_PER_CASE,
+    skip_merged: int = 0,
+    existing: dict[str, int] | None = None,
 ) -> list[EvaluationCase]:
     fetcher = GitHubFetcher(token, transport=transport, sleep=sleep)
-    splits = split_repos(repos)
+    # The split is defined over the full default list, so adding repositories later never
+    # moves an existing repository between dev and test.
+    splits = split_repos(sorted(set(DEFAULT_REPOS) | set(repos)))
+    existing = existing or {}
     cases: list[EvaluationCase] = []
     limit = asyncio.Semaphore(4)
 
@@ -583,6 +599,8 @@ async def build_corpus(
                 repos_dir=repos_dir,
                 min_findings=min_findings,
                 split=splits[full_name],
+                skip_merged=skip_merged,
+                already=existing.get(full_name, 0),
             )
 
     try:
@@ -656,6 +674,12 @@ def main() -> None:
     parser.add_argument("repos", nargs="*", default=list(DEFAULT_REPOS), help="owner/name")
     parser.add_argument("--max-prs", type=int, default=150, help="merged PRs scanned per repo")
     parser.add_argument("--max-cases-per-repo", type=int, default=9)
+    parser.add_argument(
+        "--skip-merged", type=int, default=0, help="skip the N most recent merged PRs (scanned)"
+    )
+    parser.add_argument(
+        "--merge", action="store_true", help="add to the existing corpus instead of replacing it"
+    )
     parser.add_argument("--min-findings", type=int, default=MIN_FINDINGS_PER_CASE)
     parser.add_argument("--output", type=Path, default=Path("evaluation/corpus.jsonl"))
     parser.add_argument("--repos-dir", type=Path, default=Path("evaluation/repos"))
@@ -664,6 +688,9 @@ def main() -> None:
     token = os.environ.get("GITHUB_TOKEN", "")
     if not token:
         raise SystemExit("Set GITHUB_TOKEN (authenticated requests; 5000/hour limit).")
+    previous: list[EvaluationCase] = []
+    if args.merge and args.output.exists():
+        previous = load_jsonl(args.output)
     cases = asyncio.run(
         build_corpus(
             args.repos,
@@ -672,10 +699,21 @@ def main() -> None:
             max_cases_per_repo=args.max_cases_per_repo,
             repos_dir=args.repos_dir,
             min_findings=args.min_findings,
+            skip_merged=args.skip_merged,
+            existing=dict(Counter(c.metadata["repo"] for c in previous)),
         )
+    )
+    known = {c.case_id for c in previous}
+    cases = sorted(
+        previous + [c for c in cases if c.case_id not in known],
+        key=lambda c: (c.metadata["repo"], c.metadata["pr_number"]),
     )
     if not cases:
         raise SystemExit("No cases built; corpus not written.")
+    # One split over the final repository set, applied to every case (also merged ones).
+    final = split_repos(sorted({c.metadata["repo"] for c in cases}))
+    for case in cases:
+        case.metadata["split"] = final[case.metadata["repo"]]
     digest = write_corpus(cases, args.output)
     args.card.write_text(
         corpus_card(cases, digest, datetime.now(UTC).strftime("%Y-%m-%d %H:%M")), encoding="utf-8"

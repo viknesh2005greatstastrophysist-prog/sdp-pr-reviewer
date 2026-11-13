@@ -577,11 +577,12 @@ def generate(
     rng = random.Random(seed)  # noqa: S311 - reproducible sampling, not security
     files = candidate_files(corpus)
     rng.shuffle(files)
-    used_files: set[tuple[str, str]] = set()
     cases: list[EvaluationCase] = []
     repo_cap = -(-per_category // 3)
     for category in CATEGORIES:
         mutators = MUTATORS[category]
+        # A file hosts at most one defect per category (it may recur in another category).
+        used_files: set[tuple[str, str]] = set()
         picked = 0
         repo_counts: Counter[str] = Counter()
         mutation_counts: Counter[str] = Counter()

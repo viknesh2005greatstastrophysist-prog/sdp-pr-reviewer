@@ -85,9 +85,12 @@ class OpenAICompatibleClient:
 
 def _quota_exhausted(response: httpx.Response) -> bool:
     try:
-        error = response.json().get("error", {})
+        body = response.json()
     except ValueError:
         return False
+    if isinstance(body, list):  # Google's OpenAI endpoint returns errors as [{"error": ...}]
+        body = body[0] if body else {}
+    error = body.get("error", {}) if isinstance(body, dict) else {}
     if isinstance(error, list):  # some OpenAI-compatible gateways wrap errors in a list
         error = error[0] if error else {}
     return isinstance(error, dict) and error.get("code") == "insufficient_quota"

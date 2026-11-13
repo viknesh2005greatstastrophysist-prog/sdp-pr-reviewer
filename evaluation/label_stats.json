@@ -1,0 +1,25 @@
+{
+  "comments": 534,
+  "classified": 534,
+  "actionable": 413,
+  "actionable_rate": 0.7734082397003745,
+  "category_agreement": 0.5823970037453183,
+  "category_agreement_actionable": 0.5641646489104116,
+  "cohens_kappa": 0.14255472350230414,
+  "addressed": 403,
+  "addressed_and_actionable": 337,
+  "actionable_rate_addressed": 0.8362282878411911,
+  "actionable_rate_not_addressed": 0.5801526717557252,
+  "classifier_categories_actionable": {
+    "bug-hunter": 86,
+    "architecture": 69,
+    "style": 243,
+    "performance": 15
+  },
+  "heuristic_categories_actionable": {
+    "style": 332,
+    "bug-hunter": 66,
+    "performance": 6,
+    "architecture": 9
+  }
+}

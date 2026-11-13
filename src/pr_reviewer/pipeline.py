@@ -53,7 +53,7 @@ async def review_diff(
         agent_findings, agent_warnings = await dispatch(files, selected, agent_timeout)
         runs = []
     warnings.extend(agent_warnings)
-    findings = aggregate(static + agent_findings)
+    findings = aggregate(static + agent_findings, files)
     # Focus after aggregation so the filter can be replayed offline on saved predictions.
     # None means "use the configured REVIEW_MODE" (default focused).
     config = Settings.from_env()

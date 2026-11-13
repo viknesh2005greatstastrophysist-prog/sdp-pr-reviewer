@@ -504,3 +504,13 @@ def test_injection_is_deterministic_and_records_the_defect_line(tmp_path):
 def test_new_file_diff_parses_as_added_file():
     parsed = parse_diff(new_file_diff("p/q.py", "a = 1\nb = 2\n"))
     assert parsed[0].status == "added" and parsed[0].added_lines() == {1, 2}
+
+
+def test_quota_detection_survives_list_shaped_error_bodies():
+    from pr_reviewer.llm import _quota_exhausted
+
+    listed = httpx.Response(429, json=[{"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}}])
+    assert _quota_exhausted(listed) is False
+    billing = httpx.Response(429, json=[{"error": {"code": "insufficient_quota"}}])
+    assert _quota_exhausted(billing) is True
+    assert _quota_exhausted(httpx.Response(429, text="not json")) is False
