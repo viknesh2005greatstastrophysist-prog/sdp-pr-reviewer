@@ -204,7 +204,7 @@ async def run_review(
 # Dashboard and status ---------------------------------------------------------------------
 @app.get("/", include_in_schema=False)
 def dashboard():
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/dashboard/status")

@@ -473,3 +473,21 @@ def test_strip_fence_removes_json_code_fences():
     assert _strip_fence('```json\n{"a": 1}\n```').strip() == '{"a": 1}'
     assert _strip_fence('```\n{"a": 1}\n```\n').strip() == '{"a": 1}'
     assert _strip_fence(' {"a": 1} ') == '{"a": 1}'
+
+
+def test_materialize_accepts_githubs_line_wrapped_base64(tmp_path):
+    """GitHub's contents API wraps base64 at 60 characters with newlines (found live)."""
+    source = ("def handler(value):\n    return value * 2\n" * 20).encode()
+    encoded = base64.encodebytes(source).decode()  # newline-wrapped, like GitHub
+    assert "\n" in encoded.strip()
+
+    def handler(request):
+        return httpx.Response(
+            200, json={"encoding": "base64", "size": len(source), "content": encoded}
+        )
+
+    diff = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
+    client = GitHubClient("t", transport=httpx.MockTransport(handler))
+    warnings = asyncio.run(client.materialize_changed_files(REF, parse_diff(diff), tmp_path))
+    assert warnings == []
+    assert (tmp_path / "a.py").read_bytes() == source

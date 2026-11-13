@@ -172,7 +172,9 @@ class GitHubClient:
                     warnings.append(f"Skipped unsupported or oversized content {item.path}")
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(base64.b64decode(payload["content"], validate=True))
+                target.write_bytes(
+                    base64.b64decode("".join(payload["content"].split()), validate=True)
+                )
             except (GitHubError, ValueError, OSError) as exc:
                 warnings.append(f"Could not materialize {item.path}: {exc}")
         return warnings

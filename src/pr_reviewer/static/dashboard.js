@@ -235,7 +235,7 @@ function renderAgents(runs = []) {
 
 function renderReadiness(status) {
   const checks = [
-    ["GitHub connection", status.github_connected, "required for live mode"],
+    ["GitHub connection", status.github_connected, status.github_connected ? "server credentials ready" : "required for live mode"],
     ["LLM specialists", status.llm_connected, status.llm_connected ? "connected" : "offline heuristics"],
     ["Ruff analyzer", status.analyzers.ruff, "deterministic"],
     ["Semgrep analyzer", status.analyzers.semgrep, "security rules"],
